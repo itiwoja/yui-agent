@@ -2,7 +2,7 @@
 
 **「入力されなかったタスク」を発見する対話エージェント。**
 
-既存ツールは "入力したタスク" を管理する。Yui は独り言・思いつき・雑談から、対話しながらタスクを抽出し、優先度と理由を自律判断する。過去の言及を記憶し、「前にも言ったのに終わってないタスク」の優先度を昇格させて指摘する。さらに、ユーザーが何も言わなくても放置タスクをバックグラウンドで見直し、Google Search grounding で関連情報を裏どりして添えてくる。
+既存ツールは "入力したタスク" を管理する。Yui は独り言・思いつき・雑談から、対話しながらタスクを抽出し、優先度と理由を自律判断して Google Tasks に登録する。過去の言及を記憶し、「前にも言ったのに終わってないタスク」の優先度を昇格させて指摘する。さらに、ユーザーが何も言わなくても放置タスクをバックグラウンドで見直し、Google Search grounding で関連情報を裏どりして添えてくる。
 
 > DevOps × AI Agent Hackathon（ファインディ主催 / Google Cloud 協賛）提出作品
 
@@ -13,13 +13,17 @@
   Firestore(会話履歴) を踏まえて Gemini が会話しながらタスクを抽出
   ↓
 Firestore: task_mentions に記録 → 表記揺れを超えた再言及検出 → 優先度昇格
+  ↓
+Google Tasks API: 「Yui」リストへ登録・更新（優先度を絵文字ラベル化）
 
 【自律】Cloud Scheduler（30分毎）→ /autonomous-review
   放置タスクを検知 → 優先度を自動で見直し
   → 高優先度タスクは Google Search grounding で裏どり調査を添付
+  → Google Tasks にも反映
 ```
 
-すべて Cloud Run 上で動作。認証は Application Default Credentials（APIキーなし）。
+すべて Cloud Run 上で動作。Vertex AI / Firestore の認証は Application Default Credentials（APIキーなし）。
+Google Tasks のみ、アカウント所有者本人が一度だけ許可した OAuth refresh token を Secret Manager 経由で使用。
 
 ## 競合との違い
 
@@ -51,7 +55,6 @@ gcloud run deploy yui-agent --source . --region asia-northeast1 --allow-unauthen
 
 ## ロードマップ
 
-- Google Tasks API への登録連携
 - Speech-to-Text による音声メモ入力
 - ローカル版 YuiChan（デスクバディ）との人格・記憶統合
 - 壁打ち・ブレスト相手としての対話深化、不在時のアイデア検証
