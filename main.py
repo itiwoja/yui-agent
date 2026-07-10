@@ -7,7 +7,7 @@ from fastapi import FastAPI
 from pydantic import BaseModel
 
 from extraction import extract_tasks
-from memory_store import record_and_resolve
+from memory_store import get_recent_titles, record_and_resolve
 
 app = FastAPI(title="Yui Cloud Agent")
 
@@ -25,7 +25,8 @@ class UtteranceRequest(BaseModel):
 
 @app.post("/process")
 def process(request: UtteranceRequest) -> dict:
-    extracted = extract_tasks(request.text)
+    known_titles = get_recent_titles()
+    extracted = extract_tasks(request.text, known_titles=known_titles)
     resolved = [
         record_and_resolve(task.title, task.priority, task.reason)
         for task in extracted.tasks

@@ -14,6 +14,23 @@ def _client() -> firestore.Client:
     return firestore.Client(project=PROJECT_ID)
 
 
+def get_recent_titles(limit: int = 30) -> list[str]:
+    """直近に記録されたタスクタイトルを返す。抽出時にGeminiへ渡し、同一タスクの表記揺れを吸収させる。"""
+    db = _client()
+    docs = (
+        db.collection(COLLECTION)
+        .order_by("last_mentioned_at", direction=firestore.Query.DESCENDING)
+        .limit(limit)
+        .get()
+    )
+    seen = []
+    for doc in docs:
+        title = doc.to_dict().get("title")
+        if title and title not in seen:
+            seen.append(title)
+    return seen
+
+
 def record_and_resolve(title: str, priority: int, reason: str) -> dict:
     """タスク言及を記録し、過去に同じタスクの言及があれば優先度を昇格して返す。"""
     db = _client()
