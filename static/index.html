@@ -103,6 +103,22 @@
   }
   button:disabled { opacity: 0.5; cursor: default; }
   .typing { color: var(--sub); font-size: 13px; padding-left: 4px; }
+  #mic {
+    background: var(--panel);
+    color: var(--text);
+    border: 1px solid var(--border);
+    min-width: 46px;
+  }
+  #mic.recording {
+    background: #e05a5a;
+    color: #fff;
+    border-color: #e05a5a;
+    animation: pulse 1.2s infinite;
+  }
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(224, 90, 90, 0.5); }
+    50% { box-shadow: 0 0 0 8px rgba(224, 90, 90, 0); }
+  }
 </style>
 </head>
 <body>
@@ -113,6 +129,7 @@
   </header>
   <div id="log"></div>
   <form id="form">
+    <button id="mic" type="button" title="音声入力">🎙️</button>
     <input id="input" type="text" placeholder="ゆいに話しかけてみる…" autocomplete="off" />
     <button id="send" type="submit">送信</button>
   </form>
@@ -153,6 +170,69 @@ async function speak(text) {
   }
 }
 
+const micBtn = document.getElementById('mic');
+let mediaRecorder = null;
+let recordedChunks = [];
+let isRecording = false;
+
+async function startRecording() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  recordedChunks = [];
+  mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+  mediaRecorder.ondataavailable = (e) => {
+    if (e.data.size > 0) recordedChunks.push(e.data);
+  };
+  mediaRecorder.onstop = async () => {
+    stream.getTracks().forEach((t) => t.stop());
+    const blob = new Blob(recordedChunks, { type: 'audio/webm' });
+    await transcribeAndFill(blob);
+  };
+  mediaRecorder.start();
+  isRecording = true;
+  micBtn.classList.add('recording');
+}
+
+function stopRecording() {
+  if (mediaRecorder && isRecording) {
+    mediaRecorder.stop();
+    isRecording = false;
+    micBtn.classList.remove('recording');
+  }
+}
+
+async function transcribeAndFill(blob) {
+  micBtn.disabled = true;
+  input.placeholder = 'ゆいが聞き取り中…';
+  try {
+    const res = await fetch('/transcribe', {
+      method: 'POST',
+      headers: { 'Content-Type': 'audio/webm' },
+      body: blob,
+    });
+    const data = await res.json();
+    if (res.ok && data.text) {
+      await sendMessage(data.text);
+    } else {
+      input.placeholder = '聞き取れませんでした。もう一度試してください';
+    }
+  } catch (err) {
+    input.placeholder = '聞き取りに失敗しました';
+  } finally {
+    micBtn.disabled = false;
+    setTimeout(() => { input.placeholder = 'ゆいに話しかけてみる…'; }, 3000);
+  }
+}
+
+micBtn.addEventListener('click', () => {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording().catch(() => {
+      input.placeholder = 'マイクへのアクセスが許可されていません';
+    });
+  }
+});
+
 const sessionId = (() => {
   const key = 'yui_session_id';
   let id = localStorage.getItem(key);
@@ -190,14 +270,14 @@ function addRow(role, text, tasks) {
   return row;
 }
 
-form.addEventListener('submit', async (e) => {
-  e.preventDefault();
-  const text = input.value.trim();
+async function sendMessage(text) {
+  text = text.trim();
   if (!text) return;
 
   addRow('user', text);
   input.value = '';
   sendBtn.disabled = true;
+  micBtn.disabled = true;
 
   const typing = document.createElement('div');
   typing.className = 'typing';
@@ -224,8 +304,14 @@ form.addEventListener('submit', async (e) => {
     addRow('yui', '通信エラーが発生しました。');
   } finally {
     sendBtn.disabled = false;
+    micBtn.disabled = false;
     input.focus();
   }
+}
+
+form.addEventListener('submit', (e) => {
+  e.preventDefault();
+  sendMessage(input.value);
 });
 
 addRow('yui', 'こんにちは、ゆいです。今日あったこと、思いついたこと、なんでも話しかけてみてください。');

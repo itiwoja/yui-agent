@@ -3,7 +3,7 @@
 MVP パイプライン:
     対話入力 → Gemini(タスク抽出・優先度・理由) → Firestore(記憶・優先度昇格) → Google Tasks
 """
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -11,12 +11,13 @@ from autonomous_review import run_autonomous_review
 from chat import chat_turn
 from extraction import extract_tasks
 from memory_store import get_recent_titles, record_and_resolve
+from speech_to_text import transcribe_audio
 from tasks_client import upsert_task
 from tts import synthesize_speech
 
 app = FastAPI(title="Yui Cloud Agent")
 
-APP_VERSION = "0.5.0"
+APP_VERSION = "0.6.0"
 
 
 @app.get("/health")
@@ -67,6 +68,13 @@ class SpeechRequest(BaseModel):
 def tts(request: SpeechRequest) -> Response:
     audio = synthesize_speech(request.text)
     return Response(content=audio, media_type="audio/mpeg")
+
+
+@app.post("/transcribe")
+async def transcribe(request: Request) -> dict:
+    audio_bytes = await request.body()
+    text = transcribe_audio(audio_bytes)
+    return {"text": text}
 
 
 @app.post("/autonomous-review")
