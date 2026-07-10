@@ -4,6 +4,7 @@ MVP パイプライン:
     対話入力 → Gemini(タスク抽出・優先度・理由) → Firestore(記憶・優先度昇格) → Google Tasks
 """
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
 from autonomous_review import run_autonomous_review
@@ -61,3 +62,6 @@ def chat(request: ChatRequest) -> dict:
 def autonomous_review() -> dict:
     """Cloud Scheduler から定期的に叩かれ、ユーザーの指示なしに放置タスクを見直す。"""
     return run_autonomous_review()
+
+
+app.mount("/", StaticFiles(directory="static", html=True), name="static")
