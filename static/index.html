@@ -10,10 +10,11 @@
     --text: #e7e9ee;
     --sub: #8b93a7;
     --accent: #6ea8ff;
-    --listening: #4fd18b;
+    --ambient: #3a4256;
+    --captured: #4fd18b;
     --speaking: #6ea8ff;
     --thinking: #c99bff;
-    --end: #e05a5a;
+    --off: #e05a5a;
   }
   * { box-sizing: border-box; }
   body {
@@ -26,7 +27,7 @@
     flex-direction: column;
     align-items: center;
     justify-content: center;
-    gap: 28px;
+    gap: 22px;
   }
   h1 { font-size: 15px; font-weight: 500; letter-spacing: 0.08em; color: var(--sub); margin: 0; }
 
@@ -42,41 +43,45 @@
     font-size: 56px;
     transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
   }
-  #orb.listening { border-color: var(--listening); box-shadow: 0 0 40px rgba(79, 209, 139, 0.25); animation: breathe 1.6s ease-in-out infinite; }
+  #orb.ambient { border-color: var(--ambient); animation: breathe 3.2s ease-in-out infinite; }
+  #orb.captured { border-color: var(--captured); box-shadow: 0 0 40px rgba(79, 209, 139, 0.3); }
   #orb.thinking { border-color: var(--thinking); box-shadow: 0 0 40px rgba(201, 155, 255, 0.25); animation: spin 2.2s linear infinite; }
   #orb.speaking { border-color: var(--speaking); box-shadow: 0 0 40px rgba(110, 168, 255, 0.3); animation: pulse 0.9s ease-in-out infinite; }
 
-  @keyframes breathe { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); } }
+  @keyframes breathe { 0%, 100% { transform: scale(1); opacity: 0.85; } 50% { transform: scale(1.03); opacity: 1; } }
   @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.08); } }
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   #status { font-size: 14px; color: var(--sub); min-height: 20px; }
 
-  #callBtn {
-    background: var(--accent);
-    color: #0b0e14;
-    border: none;
+  #toggle {
+    position: fixed;
+    top: 20px;
+    right: 20px;
+    background: transparent;
+    color: var(--sub);
+    border: 1px solid #262b36;
     border-radius: 999px;
-    padding: 14px 36px;
-    font-weight: 700;
-    font-size: 15px;
+    padding: 8px 18px;
+    font-weight: 600;
+    font-size: 13px;
     cursor: pointer;
     letter-spacing: 0.02em;
   }
-  #callBtn.active { background: var(--end); color: #fff; }
-  #callBtn:disabled { opacity: 0.5; cursor: default; }
+  #toggle.on { border-color: var(--captured); color: var(--captured); }
+  #toggle:disabled { opacity: 0.5; cursor: default; }
 </style>
 </head>
 <body>
   <h1>YUI</h1>
+  <button id="toggle" type="button">そばに置く</button>
   <div id="orb">🎧</div>
-  <div id="status">通話ボタンを押して話しかけてください</div>
-  <button id="callBtn" type="button">通話をはじめる</button>
+  <div id="status">オフになっています</div>
 
 <script>
 const orb = document.getElementById('orb');
 const statusEl = document.getElementById('status');
-const callBtn = document.getElementById('callBtn');
+const toggleBtn = document.getElementById('toggle');
 
 const sessionId = (() => {
   const key = 'yui_session_id';
@@ -92,8 +97,9 @@ const SILENCE_MS = 1100;
 const MIN_SPEECH_MS = 500;
 const MAX_RECORD_MS = 20000;
 const VOICE_THRESHOLD = 14;
+const WAKE_PATTERN = /ゆい|ユイ|yui/i;
 
-let callActive = false;
+let ambientActive = false;
 let stream = null;
 let audioCtx = null;
 let analyser = null;
@@ -106,11 +112,15 @@ let maxRecordTimer = null;
 let currentAudio = null;
 
 function setState(state) {
-  orb.classList.remove('listening', 'thinking', 'speaking');
-  if (state === 'listening') {
-    orb.textContent = '🎙️';
-    orb.classList.add('listening');
-    statusEl.textContent = 'お話しください…';
+  orb.classList.remove('ambient', 'captured', 'thinking', 'speaking');
+  if (state === 'ambient') {
+    orb.textContent = '🎧';
+    orb.classList.add('ambient');
+    statusEl.textContent = '待機中…（呼びかけると反応します）';
+  } else if (state === 'captured') {
+    orb.textContent = '📝';
+    orb.classList.add('captured');
+    statusEl.textContent = 'メモしました';
   } else if (state === 'thinking') {
     orb.textContent = '💭';
     orb.classList.add('thinking');
@@ -121,7 +131,7 @@ function setState(state) {
     statusEl.textContent = 'ゆいが話しています…';
   } else {
     orb.textContent = '🎧';
-    statusEl.textContent = callActive ? '接続中…' : '通話ボタンを押して話しかけてください';
+    statusEl.textContent = 'オフになっています';
   }
 }
 
@@ -157,7 +167,7 @@ function startVadWatch() {
 }
 
 async function startListening() {
-  if (!callActive) return;
+  if (!ambientActive) return;
   recordedChunks = [];
   mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
   mediaRecorder.ondataavailable = (e) => {
@@ -167,13 +177,13 @@ async function startListening() {
     stopVadWatch();
     const blob = new Blob(recordedChunks, { type: 'audio/webm' });
     if (blob.size < 2000) {
-      if (callActive) startListening();
+      if (ambientActive) startListening();
       return;
     }
-    await handleTurn(blob);
+    await handleUtterance(blob);
   };
   mediaRecorder.start();
-  setState('listening');
+  setState('ambient');
   startVadWatch();
 }
 
@@ -183,7 +193,7 @@ function stopRecording() {
   }
 }
 
-async function handleTurn(blob) {
+async function handleUtterance(blob) {
   setState('thinking');
   try {
     const transcribeRes = await fetch('/transcribe', {
@@ -194,26 +204,38 @@ async function handleTurn(blob) {
     const transcribeData = await transcribeRes.json();
     const text = (transcribeData.text || '').trim();
     if (!text) {
-      if (callActive) startListening();
+      if (ambientActive) startListening();
       return;
     }
 
-    const chatRes = await fetch('/chat', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ session_id: sessionId, message: text }),
-    });
-    const chatData = await chatRes.json();
-    if (!chatRes.ok || !chatData.reply) {
-      if (callActive) startListening();
-      return;
+    if (WAKE_PATTERN.test(text)) {
+      // 「ゆい」への呼びかけ: 会話して声で返す
+      const chatRes = await fetch('/chat', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, message: text }),
+      });
+      const chatData = await chatRes.json();
+      if (chatRes.ok && chatData.reply) {
+        await speakAndWait(chatData.reply);
+      }
+    } else {
+      // 呼びかけではない独り言: 声には出さず、静かにタスクだけ拾う
+      const processRes = await fetch('/process', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+      });
+      const processData = await processRes.json();
+      if (processRes.ok && processData.tasks && processData.tasks.length) {
+        setState('captured');
+        await new Promise((r) => setTimeout(r, 900));
+      }
     }
-
-    await speakAndWait(chatData.reply);
   } catch (err) {
-    // 通信エラーでも通話は切らず、次の発話を待つ
+    // 通信エラーでも待機は止めず、次の発話を待つ
   } finally {
-    if (callActive) startListening();
+    if (ambientActive) startListening();
   }
 }
 
@@ -239,7 +261,7 @@ function speakAndWait(text) {
   });
 }
 
-async function startCall() {
+async function enableAmbient() {
   try {
     stream = await navigator.mediaDevices.getUserMedia({ audio: true });
   } catch (err) {
@@ -252,32 +274,32 @@ async function startCall() {
   analyser.fftSize = 512;
   source.connect(analyser);
 
-  callActive = true;
-  callBtn.textContent = '通話をおわる';
-  callBtn.classList.add('active');
+  ambientActive = true;
+  toggleBtn.textContent = 'オフにする';
+  toggleBtn.classList.add('on');
   startListening();
 }
 
-function endCall() {
-  callActive = false;
+function disableAmbient() {
+  ambientActive = false;
   stopVadWatch();
   if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
-  callBtn.textContent = '通話をはじめる';
-  callBtn.classList.remove('active');
-  setState('idle');
+  toggleBtn.textContent = 'そばに置く';
+  toggleBtn.classList.remove('on');
+  setState('off');
 }
 
-callBtn.addEventListener('click', () => {
-  callBtn.disabled = true;
-  (callActive ? Promise.resolve(endCall()) : startCall()).finally(() => {
-    callBtn.disabled = false;
+toggleBtn.addEventListener('click', () => {
+  toggleBtn.disabled = true;
+  (ambientActive ? Promise.resolve(disableAmbient()) : enableAmbient()).finally(() => {
+    toggleBtn.disabled = false;
   });
 });
 
-setState('idle');
+setState('off');
 </script>
 </body>
 </html>
