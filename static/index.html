@@ -96,10 +96,14 @@ const sessionId = (() => {
 const SILENCE_MS = 1100;
 const MIN_SPEECH_MS = 500;
 const MAX_RECORD_MS = 20000;
-const VOICE_THRESHOLD = 14;
-const WAKE_PATTERN = /ゆい|ユイ|yui/i;
+const VOICE_THRESHOLD = 10;
+// 音声認識が「ゆい」を同音の別表記に変換することがあるため候補を広めに取る
+const WAKE_PATTERN = /ゆい|ユイ|唯|結衣|由衣|由井|優依|夕依|yui/i;
+// 一度呼びかけたら、この時間内の発話は名前なしでも会話として扱う（雑談の継続）
+const CONVERSATION_WINDOW_MS = 45000;
 
 let ambientActive = false;
+let conversationActiveUntil = 0;
 let stream = null;
 let audioCtx = null;
 let analyser = null;
@@ -208,8 +212,9 @@ async function handleUtterance(blob) {
       return;
     }
 
-    if (WAKE_PATTERN.test(text)) {
-      // 「ゆい」への呼びかけ: 会話して声で返す
+    const inConversation = Date.now() < conversationActiveUntil;
+    if (WAKE_PATTERN.test(text) || inConversation) {
+      // 「ゆい」への呼びかけ、または会話継続中: 会話して声で返す
       const chatRes = await fetch('/chat', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -217,6 +222,7 @@ async function handleUtterance(blob) {
       });
       const chatData = await chatRes.json();
       if (chatRes.ok && chatData.reply) {
+        conversationActiveUntil = Date.now() + CONVERSATION_WINDOW_MS;
         await speakAndWait(chatData.reply);
       }
     } else {
@@ -282,6 +288,7 @@ async function enableAmbient() {
 
 function disableAmbient() {
   ambientActive = false;
+  conversationActiveUntil = 0;
   stopVadWatch();
   if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
   if (currentAudio) { currentAudio.pause(); currentAudio = null; }

@@ -74,6 +74,7 @@ def tts(request: SpeechRequest) -> Response:
 async def transcribe(request: Request) -> dict:
     audio_bytes = await request.body()
     text = transcribe_audio(audio_bytes)
+    print(f"[transcribe] {text!r}")
     return {"text": text}
 
 
