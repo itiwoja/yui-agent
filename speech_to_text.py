@@ -7,6 +7,12 @@ from google.cloud import speech
 
 _client = None
 
+# 認識されやすいよう重みづけするフレーズ。呼びかけ語(ゆい)を最優先で拾う。
+PHRASE_HINTS = [
+    "ゆい", "ユイ",
+    "タスク", "締め切り", "期限", "資料", "会議", "申告", "支払い", "確認",
+]
+
 
 def _get_client() -> speech.SpeechClient:
     global _client
@@ -22,6 +28,11 @@ def transcribe_audio(audio_bytes: bytes) -> str:
             encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,
             language_code="ja-JP",
             enable_automatic_punctuation=True,
+            model="latest_long",
+            use_enhanced=True,
+            speech_contexts=[
+                speech.SpeechContext(phrases=PHRASE_HINTS, boost=15.0),
+            ],
         ),
         audio=speech.RecognitionAudio(content=audio_bytes),
     )
