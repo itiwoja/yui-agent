@@ -18,6 +18,13 @@ HEADERS = {"X-Yui-Token": "test-token"}
 
 
 def test_converse_streams_transcript_audio_and_done(monkeypatch):
+    # prefetch_context は実 Firestore/Calendar クライアントに触るため必ずモックする
+    # （CI には ADC が無く DefaultCredentialsError になる）。
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
     monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
     monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello world."]))
     monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
@@ -60,6 +67,11 @@ def test_converse_passes_prefetched_context_to_stream_reply(monkeypatch):
 
 
 def test_converse_falls_back_to_mp3_when_streaming_tts_fails(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
     monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
     monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello world."]))
 
@@ -79,6 +91,11 @@ def test_converse_falls_back_to_mp3_when_streaming_tts_fails(monkeypatch):
 
 
 def test_converse_emits_empty_for_empty_transcript(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
     monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "  ")
 
     client = TestClient(main.app)
