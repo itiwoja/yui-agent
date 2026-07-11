@@ -405,23 +405,25 @@ async def converse(
         first_sentence_ms: float | None = None
         first_audio_ms: float | None = None
 
+        # 注意: ジェネレータ内で yield を跨ぐ span は OpenTelemetry のコンテキストを
+        # 壊す（"was created in a different Context" が毎リクエスト発生）ため使わない。
+        # 区間の詳細時間は obs.info の stt_ms/first_audio_ms 等の構造化ログが担う。
         def sentence_audio_events(sentence: str):
             nonlocal first_audio_ms
             try:
-                with span("tts_sentence"):
-                    for pcm in stream_synthesize(sentence):
-                        if first_audio_ms is None:
-                            first_audio_ms = round(
-                                (time.perf_counter() - started_at) * 1000, 1
-                            )
-                        yield _ndjson_event(
-                            {
-                                "type": "pcm",
-                                "rate": 24000,
-                                "data": base64.b64encode(pcm).decode("ascii"),
-                                "text": sentence,
-                            }
+                for pcm in stream_synthesize(sentence):
+                    if first_audio_ms is None:
+                        first_audio_ms = round(
+                            (time.perf_counter() - started_at) * 1000, 1
                         )
+                    yield _ndjson_event(
+                        {
+                            "type": "pcm",
+                            "rate": 24000,
+                            "data": base64.b64encode(pcm).decode("ascii"),
+                            "text": sentence,
+                        }
+                    )
                 return
             except Exception as exc:
                 obs.warning(
@@ -435,34 +437,32 @@ async def converse(
                     exc_type=type(exc).__name__,
                 )
 
-            with span("tts_sentence"):
-                audio = synthesize_speech(sentence)
-                if first_audio_ms is None:
-                    first_audio_ms = round(
-                        (time.perf_counter() - started_at) * 1000, 1
-                    )
-                yield _ndjson_event(
-                    {
-                        "type": "audio",
-                        "data": base64.b64encode(audio).decode("ascii"),
-                        "text": sentence,
-                    }
+            audio = synthesize_speech(sentence)
+            if first_audio_ms is None:
+                first_audio_ms = round(
+                    (time.perf_counter() - started_at) * 1000, 1
                 )
+            yield _ndjson_event(
+                {
+                    "type": "audio",
+                    "data": base64.b64encode(audio).decode("ascii"),
+                    "text": sentence,
+                }
+            )
 
         try:
             yield _ndjson_event({"type": "transcript", "text": user_text})
-            with span("gemini_stream"):
-                for chunk in stream_reply(session_id, user_text, context):
-                    reply_parts.append(chunk)
-                    buffer += chunk
-                    ready, buffer = split_sentences(buffer)
-                    for sentence in ready:
-                        if first_sentence_ms is None:
-                            first_sentence_ms = round(
-                                (time.perf_counter() - started_at) * 1000, 1
-                            )
-                        sentences += 1
-                        yield from sentence_audio_events(sentence)
+            for chunk in stream_reply(session_id, user_text, context):
+                reply_parts.append(chunk)
+                buffer += chunk
+                ready, buffer = split_sentences(buffer)
+                for sentence in ready:
+                    if first_sentence_ms is None:
+                        first_sentence_ms = round(
+                            (time.perf_counter() - started_at) * 1000, 1
+                        )
+                    sentences += 1
+                    yield from sentence_audio_events(sentence)
             if buffer.strip():
                 sentence = buffer.strip()
                 if first_sentence_ms is None:
