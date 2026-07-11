@@ -152,8 +152,9 @@ function queryNumber(name, fallback, min, max) {
   return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
 }
 
+// 実測で体感遅延の最大要因の一つだったため短縮。切れやすい環境では ?silence= で戻す。
 // ?silence=1800&threshold=12 のように、会場で再デプロイせず調整できる。
-const SILENCE_MS = queryNumber('silence', 2200, 200, 10000);
+const SILENCE_MS = queryNumber('silence', 1600, 200, 10000);
 const MIN_SPEECH_MS = queryNumber('minSpeech', 500, 100, 5000);
 const MAX_RECORD_MS = queryNumber('maxRecord', 20000, 1000, 60000);
 const VOICE_THRESHOLD = queryNumber('threshold', 10, 1, 128);

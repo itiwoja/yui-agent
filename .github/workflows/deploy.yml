@@ -64,6 +64,7 @@ jobs:
           --project yui-agent-2026
           --allow-unauthenticated
           --set-secrets=YUI_APP_TOKEN=yui-app-token:latest
+          --min-instances=1
           --no-traffic
           --tag=canary
           --quiet

@@ -1,4 +1,5 @@
 """複数ターンの会話をFirestoreに保持しつつ、Geminiで会話応答とタスク抽出を同時に行う。"""
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -15,7 +16,29 @@ from retry import call_with_retry
 
 MODEL = DEFAULT_MODEL
 CONVERSATIONS_COLLECTION = "conversations"
-HISTORY_LIMIT = 20
+DEFAULT_THINKING_BUDGET = 512
+DEFAULT_HISTORY_LIMIT = 12
+
+
+def _thinking_budget() -> int:
+    """Gemini の思考トークン上限を環境変数から安全に取得する。"""
+    try:
+        budget = int(os.environ.get("YUI_THINKING_BUDGET", DEFAULT_THINKING_BUDGET))
+    except ValueError:
+        return DEFAULT_THINKING_BUDGET
+    return budget if budget >= 0 else -1
+
+
+def _history_limit() -> int:
+    """会話履歴の取得件数を環境変数から安全に取得する。"""
+    try:
+        limit = int(os.environ.get("YUI_HISTORY_LIMIT", DEFAULT_HISTORY_LIMIT))
+    except ValueError:
+        return DEFAULT_HISTORY_LIMIT
+    return limit if limit >= 0 else DEFAULT_HISTORY_LIMIT
+
+
+HISTORY_LIMIT = _history_limit()
 
 CHAT_SYSTEM_INSTRUCTION = """あなたは「ゆい」という名前の対話型AI秘書です。ユーザーの雑談・相談・思いつきに、
 親しみやすく簡潔な口語で応答してください。ユーザーの発言は音声認識を通しているため、聞き取りミスや
@@ -34,7 +57,9 @@ CHAT_SYSTEM_INSTRUCTION = """あなたは「ゆい」という名前の対話型
 次のユーザーの発言で詳細が分かったら、その時点で改めてタスク化してください。
 確信を持てる時だけtasksフィールドに構造化して返してください。
 「既存タスク一覧」に同じ用件があれば、titleはその表記をそのまま使ってください。
-タスクを見つけたことをreplyの中でわざとらしく宣言する必要はありません、自然な会話の流れで触れる程度にしてください。"""
+タスクを見つけたことをreplyの中でわざとらしく宣言する必要はありません、自然な会話の流れで触れる程度にしてください。
+返答は音声で読み上げられます。1〜3文・最大120文字程度で、要点だけを話し言葉で返してください。
+壁打ち相手として視点や論点を出すときも、一度に全部並べず、最も重要な1点から話してください。"""
 
 COMPLETION_INSTRUCTION = """
 ユーザーが既存タスクを終えたと明確に報告した場合は、該当する名前をcompleted_task_titlesに入れてください。
@@ -142,7 +167,7 @@ def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatR
                 temperature=0.4,
                 # thinking_budget=-1(自動)は複雑な相談で長考して音声UIの応答が
                 # 遅くなりすぎたため、上限を決めて速さと最低限の思考を両立させる。
-                thinking_config=types.ThinkingConfig(thinking_budget=1024),
+                thinking_config=types.ThinkingConfig(thinking_budget=_thinking_budget()),
                 response_mime_type="application/json",
                 response_schema=ChatResult,
             ),
