@@ -42,6 +42,7 @@
     justify-content: center;
     font-size: 56px;
     transition: border-color 300ms ease, box-shadow 300ms ease, transform 300ms ease;
+    cursor: pointer;
   }
   #orb.ambient { border-color: var(--ambient); animation: breathe 3.2s ease-in-out infinite; }
   #orb.captured { border-color: var(--captured); box-shadow: 0 0 40px rgba(79, 209, 139, 0.3); }
@@ -53,6 +54,7 @@
   @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
 
   #status { font-size: 14px; color: var(--sub); min-height: 20px; }
+  #hint { font-size: 13px; color: var(--accent); min-height: 20px; }
 
   #toggle {
     position: fixed;
@@ -85,12 +87,14 @@
   <a id="dashLink" href="/dashboard.html">ダッシュボード →</a>
   <h1>YUI</h1>
   <button id="toggle" type="button">そばに置く</button>
-  <div id="orb">🎧</div>
+  <div id="orb" role="button" tabindex="0" aria-label="再生中の音声を停止">🎧</div>
   <div id="status">オフになっています</div>
+  <div id="hint" aria-live="polite"></div>
 
 <script>
 const orb = document.getElementById('orb');
 const statusEl = document.getElementById('status');
+const hintEl = document.getElementById('hint');
 const toggleBtn = document.getElementById('toggle');
 
 const sessionId = (() => {
@@ -103,15 +107,20 @@ const sessionId = (() => {
   return id;
 })();
 
-// 言い淀みや息継ぎで話し終わったと誤判定されないよう、無音判定は長めに取る
-const SILENCE_MS = 2200;
-const MIN_SPEECH_MS = 500;
-const MAX_RECORD_MS = 20000;
-const VOICE_THRESHOLD = 10;
+function queryNumber(name, fallback, min, max) {
+  const value = Number(new URLSearchParams(window.location.search).get(name));
+  return Number.isFinite(value) && value >= min && value <= max ? value : fallback;
+}
+
+// ?silence=1800&threshold=12 のように、会場で再デプロイせず調整できる。
+const SILENCE_MS = queryNumber('silence', 2200, 200, 10000);
+const MIN_SPEECH_MS = queryNumber('minSpeech', 500, 100, 5000);
+const MAX_RECORD_MS = queryNumber('maxRecord', 20000, 1000, 60000);
+const VOICE_THRESHOLD = queryNumber('threshold', 10, 1, 128);
 // 音声認識が「ゆい」を同音の別表記に変換することがあるため候補を広めに取る
 const WAKE_PATTERN = /ゆい|ユイ|唯|結衣|由衣|由井|優依|夕依|yui/i;
 // 一度呼びかけたら、この時間内の発話は名前なしでも会話として扱う（雑談の継続）
-const CONVERSATION_WINDOW_MS = 45000;
+const CONVERSATION_WINDOW_MS = queryNumber('conversation', 45000, 1000, 300000);
 
 let ambientActive = false;
 let conversationActiveUntil = 0;
@@ -125,6 +134,8 @@ let speechStartedAt = null;
 let lastVoiceAt = null;
 let maxRecordTimer = null;
 let currentAudio = null;
+let currentAudioUrl = null;
+let currentAudioResolve = null;
 
 function setState(state) {
   orb.classList.remove('ambient', 'captured', 'thinking', 'speaking');
@@ -256,6 +267,26 @@ async function handleUtterance(blob) {
   }
 }
 
+function finishCurrentAudio() {
+  const resolve = currentAudioResolve;
+  if (currentAudio) {
+    currentAudio.onended = null;
+    currentAudio.onerror = null;
+  }
+  if (currentAudioUrl) URL.revokeObjectURL(currentAudioUrl);
+  currentAudio = null;
+  currentAudioUrl = null;
+  currentAudioResolve = null;
+  if (resolve) resolve();
+}
+
+function stopCurrentAudio() {
+  if (!currentAudio) return false;
+  currentAudio.pause();
+  finishCurrentAudio();
+  return true;
+}
+
 function speakAndWait(text) {
   return new Promise(async (resolve) => {
     setState('speaking');
@@ -267,13 +298,15 @@ function speakAndWait(text) {
       });
       if (!res.ok) return resolve();
       const blob = await res.blob();
-      const url = URL.createObjectURL(blob);
-      currentAudio = new Audio(url);
-      currentAudio.onended = () => resolve();
-      currentAudio.onerror = () => resolve();
+      currentAudioUrl = URL.createObjectURL(blob);
+      currentAudio = new Audio(currentAudioUrl);
+      currentAudioResolve = resolve;
+      currentAudio.onended = finishCurrentAudio;
+      currentAudio.onerror = finishCurrentAudio;
       await currentAudio.play();
     } catch (err) {
-      resolve();
+      if (currentAudio) finishCurrentAudio();
+      else resolve();
     }
   });
 }
@@ -294,6 +327,14 @@ async function enableAmbient() {
   ambientActive = true;
   toggleBtn.textContent = 'オフにする';
   toggleBtn.classList.add('on');
+  const hintKey = 'yui_initial_hint_shown';
+  if (!localStorage.getItem(hintKey)) {
+    const hint = '「ゆい」と呼びかけてね。独り言も聞いてタスクにするよ';
+    localStorage.setItem(hintKey, '1');
+    hintEl.textContent = hint;
+    await speakAndWait(hint);
+  }
+  if (!ambientActive) return;
   startListening();
 }
 
@@ -302,7 +343,7 @@ function disableAmbient() {
   conversationActiveUntil = 0;
   stopVadWatch();
   if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
-  if (currentAudio) { currentAudio.pause(); currentAudio = null; }
+  stopCurrentAudio();
   if (stream) { stream.getTracks().forEach((t) => t.stop()); stream = null; }
   if (audioCtx) { audioCtx.close(); audioCtx = null; }
   toggleBtn.textContent = 'そばに置く';
@@ -315,6 +356,18 @@ toggleBtn.addEventListener('click', () => {
   (ambientActive ? Promise.resolve(disableAmbient()) : enableAmbient()).finally(() => {
     toggleBtn.disabled = false;
   });
+});
+
+function handleOrbStop() {
+  if (stopCurrentAudio() && ambientActive) setState('ambient');
+}
+
+orb.addEventListener('click', handleOrbStop);
+orb.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault();
+    handleOrbStop();
+  }
 });
 
 setState('off');
