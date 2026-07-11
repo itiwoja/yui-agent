@@ -63,3 +63,11 @@ gcloud run deploy yui-agent --source . --region asia-northeast1 --allow-unauthen
 - ローカル版 YuiChan（デスクバディ）との人格・記憶統合
 - 壁打ち・ブレスト相手としての対話深化、不在時のアイデア検証
 - 毎朝ブリーフィング / 複数サービス連携
+
+## 関連リポジトリ
+
+これは **クラウド版**（本番稼働・DevOps × AI Agent Hackathon 提出作品）。
+
+同じ「ゆい」のローカル版（Node.js／Ollama・qwen3:8b／対話品質・記憶・自律探索のR&D）は
+`desk-buddy-YuiChan-`（非公開リポジトリ）。こちらとは独立した設計・実装で、
+ロードマップにある人格・記憶統合はまだ未着手。
