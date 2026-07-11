@@ -2,6 +2,8 @@
 
 import time
 
+import obs
+
 TRANSIENT_MARKERS = ("503", "429", "deadline", "unavailable", "timeout", "timed out")
 
 
@@ -26,8 +28,26 @@ def call_with_retry(
         try:
             return fn()
         except Exception as exc:
-            if not is_transient(exc) or attempt == attempts - 1:
+            transient = is_transient(exc)
+            if not transient or attempt == attempts - 1:
+                if transient:
+                    obs.error(
+                        "retry exhausted",
+                        api="retry",
+                        attempt=attempt + 1,
+                        attempts=attempts,
+                        detail=str(exc),
+                        exc_type=type(exc).__name__,
+                    )
                 raise
+            obs.warning(
+                "retry transient failure",
+                api="retry",
+                attempt=attempt + 1,
+                attempts=attempts,
+                detail=str(exc),
+                exc_type=type(exc).__name__,
+            )
             sleep(base_delay * (2**attempt))
 
     raise AssertionError("unreachable")

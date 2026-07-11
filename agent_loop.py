@@ -12,6 +12,7 @@ from google.genai import types
 from google.cloud import firestore
 from pydantic import BaseModel, Field
 
+import obs
 from agent_verify import plan_after_verification
 from dedup import is_duplicate
 from retry import call_with_retry
@@ -22,6 +23,7 @@ LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
 MODEL = "gemini-2.5-flash"
 COLLECTION = "task_mentions"
 LIST_LIMIT = int(os.environ.get("YUI_LIST_LIMIT", "200"))
+AGENT_LOOP_LIMIT = int(os.environ.get("YUI_AGENT_LOOP_LIMIT", "50"))
 
 DIAGNOSE_INSTRUCTION = """あなたはタスク管理秘書「ゆい」です。1つのタスクについて、
 次にどう動くべきかを判断してください。
@@ -141,62 +143,81 @@ def _verify(title: str, reason: str, action: str, note: str) -> Verification:
 
 def run_agent_loop() -> dict:
     db = _db()
-    docs = db.collection(COLLECTION).where("status", "==", "open").get()
+    docs = (
+        db.collection(COLLECTION)
+        .where("status", "==", "open")
+        .limit(AGENT_LOOP_LIMIT)
+        .get()
+    )
 
     progressed = []
     asked = []
 
     for doc in docs:
-        data = doc.to_dict()
-        title = data.get("title", "")
-        reason = data.get("reason", "")
-        priority = data.get("priority", 1)
+        try:
+            data = doc.to_dict()
+            title = data.get("title", "")
+            reason = data.get("reason", "")
+            priority = data.get("priority", 1)
 
-        asked_questions = data.get("asked_questions", [])
-        diagnosis = _diagnose(title, reason)
-        update = {}
+            asked_questions = data.get("asked_questions", [])
+            diagnosis = _diagnose(title, reason)
+            update = {}
 
-        if diagnosis.action in {"research", "draft"}:
-            action = diagnosis.action
-            note = _research(title, reason) if action == "research" else _draft(title, reason)
-            verification = _verify(title, reason, action, note)
-            plan = plan_after_verification(
-                note,
-                verification.sufficient,
-                verification.followup_action,
-                verification.question,
-                asked_questions,
-            )
-            update = plan["update"]
-            if plan["outcome"] == "progressed":
-                progressed.append({"title": title, "action": action, "note": note})
-            elif plan["outcome"] == "asked":
-                asked.append({"title": title, "question": plan["question"]})
+            if diagnosis.action in {"research", "draft"}:
+                action = diagnosis.action
+                note = (
+                    _research(title, reason)
+                    if action == "research"
+                    else _draft(title, reason)
+                )
+                verification = _verify(title, reason, action, note)
+                plan = plan_after_verification(
+                    note,
+                    verification.sufficient,
+                    verification.followup_action,
+                    verification.question,
+                    asked_questions,
+                )
+                update = plan["update"]
+                if plan["outcome"] == "progressed":
+                    progressed.append({"title": title, "action": action, "note": note})
+                elif plan["outcome"] == "asked":
+                    asked.append({"title": title, "question": plan["question"]})
 
-        elif diagnosis.action == "ask":
-            question = diagnosis.question or "この件、詳しく教えてもらえますか？"
-            # 一度した質問は繰り返さない（回答後に status が open へ戻るため、記憶が
-            # ないと同じ質問を無限に聞き返す退行が起きる）。既出なら様子見に倒す。
-            if is_duplicate(question, asked_questions):
+            elif diagnosis.action == "ask":
+                question = diagnosis.question or "この件、詳しく教えてもらえますか？"
+                # 一度した質問は繰り返さない（回答後に status が open へ戻るため、記憶が
+                # ないと同じ質問を無限に聞き返す退行が起きる）。既出なら様子見に倒す。
+                if is_duplicate(question, asked_questions):
+                    continue
+                update = {
+                    "status": "needs_input",
+                    "pending_question": question,
+                    "asked_questions": asked_questions + [question],
+                }
+                asked.append({"title": title, "question": question})
+
+            else:
                 continue
-            update = {
-                "status": "needs_input",
-                "pending_question": question,
-                "asked_questions": asked_questions + [question],
-            }
-            asked.append({"title": title, "question": question})
 
-        else:
+            doc.reference.update(update)
+
+            if update.get("agent_notes"):
+                new_reason = f"{reason}\n\n[ゆいが自動で対応] {update['agent_notes']}"
+                upsert_task(title, priority, new_reason)
+            elif update.get("pending_question"):
+                new_reason = f"{reason}\n\n[ゆいからの質問] {update['pending_question']}"
+                upsert_task(title, priority, new_reason)
+        except Exception as exc:
+            obs.error(
+                "agent loop item failed",
+                api="agent_loop",
+                doc_id=doc.id,
+                detail=str(exc),
+                exc_type=type(exc).__name__,
+            )
             continue
-
-        doc.reference.update(update)
-
-        if update.get("agent_notes"):
-            new_reason = f"{reason}\n\n[ゆいが自動で対応] {update['agent_notes']}"
-            upsert_task(title, priority, new_reason)
-        elif update.get("pending_question"):
-            new_reason = f"{reason}\n\n[ゆいからの質問] {update['pending_question']}"
-            upsert_task(title, priority, new_reason)
 
     return {"progressed": progressed, "asked": asked}
 

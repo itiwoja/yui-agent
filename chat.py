@@ -1,5 +1,6 @@
 """複数ターンの会話をFirestoreに保持しつつ、Geminiで会話応答とタスク抽出を同時に行う。"""
 import os
+import time
 from datetime import datetime, timezone
 
 from google import genai
@@ -88,13 +89,23 @@ def _append_message(session_id: str, role: str, text: str) -> None:
 
 
 def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatResult:
+    history_started_at = time.perf_counter()
     history = get_history(session_id)
+    history_ms = round((time.perf_counter() - history_started_at) * 1000, 1)
 
+    calendar_started_at = time.perf_counter()
     try:
         today_events = get_today_events()
     except Exception as exc:
-        obs.warning("failed to get today's events", detail=str(exc))
+        obs.warning(
+            "failed to get today's events",
+            api="calendar",
+            session_id=session_id,
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
         today_events = []
+    calendar_ms = round((time.perf_counter() - calendar_started_at) * 1000, 1)
 
     contents = [
         types.Content(role=msg["role"], parts=[types.Part(text=msg["text"])])
@@ -120,6 +131,7 @@ def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatR
     contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
 
     client = _client()
+    gemini_started_at = time.perf_counter()
     response = call_with_retry(
         lambda: client.models.generate_content(
             model=MODEL,
@@ -140,9 +152,19 @@ def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatR
             ),
         )
     )
+    gemini_ms = round((time.perf_counter() - gemini_started_at) * 1000, 1)
     result = ChatResult.model_validate_json(response.text)
 
     _append_message(session_id, "user", user_text)
     _append_message(session_id, "model", result.reply)
+
+    obs.info(
+        "chat_turn timing",
+        api="gemini",
+        session_id=session_id,
+        history_ms=history_ms,
+        calendar_ms=calendar_ms,
+        gemini_ms=gemini_ms,
+    )
 
     return result

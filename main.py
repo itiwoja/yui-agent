@@ -4,6 +4,8 @@ MVP パイプライン:
     対話入力 → Gemini(タスク抽出・優先度・理由) → Firestore(記憶・優先度昇格) → Google Tasks
 """
 import os
+import time
+import uuid
 
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
@@ -25,6 +27,8 @@ from memory_store import (
     get_recent_titles,
     record_and_resolve,
 )
+from speech_to_text import LOCATION as SPEECH_LOCATION
+from speech_to_text import MODEL as SPEECH_MODEL
 from speech_to_text import transcribe_audio
 from tasks_client import complete_google_task, delete_google_task, upsert_task
 from tts import synthesize_speech
@@ -34,6 +38,16 @@ app = FastAPI(title="Yui Cloud Agent")
 APP_VERSION = "0.7.0"
 CONFIDENCE_THRESHOLD = float(os.environ.get("YUI_CONFIDENCE_THRESHOLD", "0.6"))
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+
+@app.middleware("http")
+async def add_request_id(request: Request, call_next):
+    """リクエスト ID を設定し、レスポンスにも返す。"""
+    request_id = request.headers.get("x-request-id") or str(uuid.uuid4())
+    request.state.request_id = request_id
+    response = await call_next(request)
+    response.headers["x-request-id"] = request_id
+    return response
 
 
 @app.on_event("startup")
@@ -80,14 +94,22 @@ class ChatRequest(BaseModel):
 @app.post(
     "/chat", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
 )
-def chat(request: ChatRequest) -> dict:
+def chat(request: ChatRequest, http_request: Request) -> dict:
+    started_at = time.perf_counter()
     open_tasks = find_open_tasks()
     known_titles = [task["title"] for task in open_tasks if task.get("title")]
     try:
         result = chat_turn(request.session_id, request.message, known_titles)
     except Exception as exc:
         # モデル/Firestore障害でも、音声UIが無言にならないようキャラ内で謝って返す。
-        obs.error("chat_turn failed", route="/chat", detail=str(exc))
+        obs.error(
+            "chat_turn failed",
+            route="/chat",
+            request_id=http_request.state.request_id,
+            session_id=request.session_id,
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
         return {
             "reply": "ごめんね、いまうまく聞き取れなかったみたい。もう一度言ってくれる？",
             "tasks": [],
@@ -113,6 +135,15 @@ def chat(request: ChatRequest) -> dict:
                 matched_ids.add(task["id"])
                 break
 
+    obs.info(
+        "chat request completed",
+        route="/chat",
+        request_id=http_request.state.request_id,
+        session_id=request.session_id,
+        tasks=len(resolved),
+        completed=len(completed),
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+    )
     return {"reply": result.reply, "tasks": resolved, "completed_tasks": completed}
 
 
@@ -123,8 +154,30 @@ class SpeechRequest(BaseModel):
 @app.post(
     "/tts", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
 )
-def tts(request: SpeechRequest) -> Response:
-    audio = synthesize_speech(request.text)
+def tts(request: SpeechRequest, http_request: Request) -> Response:
+    started_at = time.perf_counter()
+    try:
+        audio = synthesize_speech(request.text)
+    except Exception as exc:
+        obs.error(
+            "synthesize_speech failed",
+            route="/tts",
+            api="texttospeech",
+            request_id=http_request.state.request_id,
+            chars=len(request.text),
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(status_code=502, detail="text-to-speech unavailable") from exc
+    obs.info(
+        "speech synthesized",
+        route="/tts",
+        api="texttospeech",
+        request_id=http_request.state.request_id,
+        chars=len(request.text),
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+    )
     return Response(content=audio, media_type="audio/mpeg")
 
 
@@ -132,19 +185,67 @@ def tts(request: SpeechRequest) -> Response:
     "/transcribe", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
 )
 async def transcribe(request: Request) -> dict:
+    started_at = time.perf_counter()
     audio_bytes = await request.body()
     if len(audio_bytes) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="audio payload too large")
-    text = transcribe_audio(audio_bytes)
-    obs.info("transcribed", route="/transcribe", chars=len(text))
+    try:
+        text = transcribe_audio(audio_bytes)
+    except Exception as exc:
+        obs.error(
+            "transcribe_audio failed",
+            route="/transcribe",
+            api="speech_v2",
+            request_id=request.state.request_id,
+            bytes_in=len(audio_bytes),
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+            location=SPEECH_LOCATION,
+            model=SPEECH_MODEL,
+        )
+        raise HTTPException(status_code=502, detail="speech-to-text unavailable") from exc
+    obs.info(
+        "transcribed",
+        route="/transcribe",
+        api="speech_v2",
+        request_id=request.state.request_id,
+        bytes_in=len(audio_bytes),
+        chars=len(text),
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+        location=SPEECH_LOCATION,
+        model=SPEECH_MODEL,
+    )
     return {"text": text}
 
 
 @app.post("/autonomous-review", dependencies=[Depends(require_app_token)])
-def autonomous_review() -> dict:
+def autonomous_review(request: Request) -> dict:
     """Cloud Scheduler から定期的に叩かれ、ユーザーの指示なしに放置タスクを見直す。"""
-    review_result = run_autonomous_review()
-    agent_result = run_agent_loop()
+    started_at = time.perf_counter()
+    try:
+        review_result = run_autonomous_review()
+        agent_result = run_agent_loop()
+    except Exception as exc:
+        obs.error(
+            "autonomous review failed",
+            route="/autonomous-review",
+            request_id=request.state.request_id,
+            duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        raise
+    obs.info(
+        "autonomous review completed",
+        route="/autonomous-review",
+        request_id=request.state.request_id,
+        escalated=len(review_result.get("escalated", [])),
+        researched=len(review_result.get("researched", [])),
+        progressed=len(agent_result.get("progressed", [])),
+        asked=len(agent_result.get("asked", [])),
+        duration_ms=round((time.perf_counter() - started_at) * 1000, 1),
+    )
     return {**review_result, **agent_result}
 
 
