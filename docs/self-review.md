@@ -85,8 +85,8 @@
   - **精度評価ハーネス**: `bench/extraction_metrics.py`(純・precision/recall/FP率) ＋ `bench/extraction_samples.json`
     (12件・task6/none6) ＋ `bench/extraction_eval.py`(実Gemini手動実行)。**精度を測定可能化**＝「未実証」に回答。
 - [x] **弱点#2 状態一目表示**（`static/index.html`）
-  - `🎧 聞いてるよ（呼ぶときは「ゆい」）` / `📝 メモしたよ` / `💭 考えてる…` / `💬 話してる…`。
-  - **会話継続窓のカウントダウン** `💬 会話中（名前なしでOK・あと○秒）` を毎秒更新（ambient時のみ・ticker start/stop検証済）。
+  - `🎧 聞いてるよ` / `📝 メモしたよ` / `💭 考えてる…` / `💬 話してる…` を状態ラベルとして表示。返答は音声のみで、返答テキストを常時表示しない。
+  - 当初のウェイクワード方式から、雑談からのタスク発見というコンセプトに合わせて**ウェイクワード不要の常時対話方式**へ変更。会話継続窓のカウントダウンは廃止した。
 - [x] **弱点#3 research/draft 自己検証**（最重要#1を 8→9）
   - `agent_verify.plan_after_verification`(純) ＋ `agent_loop._verify`(Gemini)。note が前進に不十分なら
     **in_progress にせず** ask（新規質問のみ・重複は monitor）/ monitor へ降格。
@@ -114,7 +114,7 @@
   - 正直な留保: ハンドメイド20件で満点＝実音声より易しい可能性。実キャプチャでの拡充が次の硬い検証（ハーネスは常設化済）。
 - [x] **弱点#2 実機（ブラウザ）検証**（Claude-in-Chrome）
   - 本番URL `https://yui-agent-h5usermlua-an.a.run.app/` を実ブラウザでロード → 状態ラベル
-    「🎧 聞いてるよ」「💭 考えてる…」「📝 メモしたよ」、**会話中カウントダウン「💬 会話中（あと45秒）」**の描画を実機確認。`/health`→200。
+    「🎧 聞いてるよ」「💭 考えてる…」「📝 メモしたよ」の描画を実機確認。`/health`→200。
   - 留保: 音声/マイクの自動化は不可＝手動リハに委ねる（UIレイヤは実機検証済）。
 - [x] **弱点#3 運用の詰め**
   - **スケール防御**: `agent_loop.list_tasks`（`YUI_LIST_LIMIT` 既定200）・`autonomous_review`（既定500）に `.limit()` 追加。

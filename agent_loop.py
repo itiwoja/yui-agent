@@ -230,6 +230,7 @@ def list_tasks() -> list[dict]:
     tasks = []
     for doc in docs:
         data = doc.to_dict()
+        last_mentioned_at = data.get("last_mentioned_at")
         tasks.append({
             "id": doc.id,
             "title": data.get("title"),
@@ -239,5 +240,14 @@ def list_tasks() -> list[dict]:
             "agent_notes": data.get("agent_notes"),
             "pending_question": data.get("pending_question"),
             "mention_count": data.get("mention_count", 1),
+            # ダッシュボードで放置時間を表示するための読み取り専用フィールド。
+            # Firestore の日時型を API で扱える ISO 文字列にして返す。
+            "last_mentioned_at": (
+                None
+                if last_mentioned_at is None
+                else last_mentioned_at.isoformat()
+                if hasattr(last_mentioned_at, "isoformat")
+                else str(last_mentioned_at)
+            ),
         })
     return tasks

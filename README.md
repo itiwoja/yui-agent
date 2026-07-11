@@ -41,7 +41,14 @@ Google Tasks のみ、アカウント所有者本人が一度だけ許可した 
 | POST | `/process` | 単発メモからタスク抽出（一発抽出） |
 | POST | `/chat` | 複数ターンの対話。会話しながらタスク抽出も継続 |
 | POST | `/tts` | Chirp3-HD による音声合成 |
+| POST | `/transcribe` | 音声を文字起こしし、対話処理へ渡す |
 | POST | `/autonomous-review` | 放置タスクの優先度見直し＋裏どり調査（Cloud Scheduler が30分毎に呼ぶ） |
+| GET | `/tasks` | ダッシュボード用のタスク一覧 |
+| POST | `/tasks/{doc_id}/answer` | ゆいからの質問への回答を記録 |
+| POST | `/tasks/{doc_id}/complete` | タスクを完了にする |
+| DELETE | `/tasks/{doc_id}` | 誤って抽出したタスクを取り消す |
+
+タスクの確認、質問への回答、完了・取消は [ダッシュボード](/dashboard.html) から行える。
 
 ## ローカル実行
 
