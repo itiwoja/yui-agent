@@ -281,7 +281,6 @@ async function handleUtterance(blob) {
     }
     const chatData = await chatRes.json();
     if (chatData.reply) {
-      hintEl.textContent = chatData.reply;
       await speakAndWait(chatData.reply);
     }
   } catch (err) {

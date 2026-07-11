@@ -120,9 +120,9 @@ def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatR
                     CHAT_SYSTEM_INSTRUCTION + COMPLETION_INSTRUCTION + CALENDAR_INSTRUCTION
                 ),
                 temperature=0.4,
-                # 明示しないとVertex AI側のデフォルト任せになり、複雑な相談でも
-                # 考え抜かず浅い返答になりがちなため、動的思考を明示的に有効化する。
-                thinking_config=types.ThinkingConfig(thinking_budget=-1),
+                # thinking_budget=-1(自動)は複雑な相談で長考して音声UIの応答が
+                # 遅くなりすぎたため、上限を決めて速さと最低限の思考を両立させる。
+                thinking_config=types.ThinkingConfig(thinking_budget=1024),
                 response_mime_type="application/json",
                 response_schema=ChatResult,
             ),
