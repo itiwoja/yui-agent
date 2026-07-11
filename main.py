@@ -38,8 +38,10 @@ from speech_to_text import transcribe_audio
 from tasks_client import complete_google_task, delete_google_task, upsert_task
 from tts import stream_synthesize, synthesize_speech
 from sentence_split import split_sentences
+from tracing import setup_tracing, span
 
 app = FastAPI(title="Yui Cloud Agent")
+setup_tracing(app)
 
 APP_VERSION = "0.7.0"
 CONFIDENCE_THRESHOLD = float(os.environ.get("YUI_CONFIDENCE_THRESHOLD", "0.6"))
@@ -337,7 +339,8 @@ async def converse(
             pass
         raise HTTPException(status_code=413, detail="audio payload too large")
     try:
-        user_text = await asyncio.to_thread(transcribe_audio, audio_bytes)
+        with span("stt"):
+            user_text = await asyncio.to_thread(transcribe_audio, audio_bytes)
     except Exception as exc:
         try:
             await context_future
@@ -405,19 +408,20 @@ async def converse(
         def sentence_audio_events(sentence: str):
             nonlocal first_audio_ms
             try:
-                for pcm in stream_synthesize(sentence):
-                    if first_audio_ms is None:
-                        first_audio_ms = round(
-                            (time.perf_counter() - started_at) * 1000, 1
+                with span("tts_sentence"):
+                    for pcm in stream_synthesize(sentence):
+                        if first_audio_ms is None:
+                            first_audio_ms = round(
+                                (time.perf_counter() - started_at) * 1000, 1
+                            )
+                        yield _ndjson_event(
+                            {
+                                "type": "pcm",
+                                "rate": 24000,
+                                "data": base64.b64encode(pcm).decode("ascii"),
+                                "text": sentence,
+                            }
                         )
-                    yield _ndjson_event(
-                        {
-                            "type": "pcm",
-                            "rate": 24000,
-                            "data": base64.b64encode(pcm).decode("ascii"),
-                            "text": sentence,
-                        }
-                    )
                 return
             except Exception as exc:
                 obs.warning(
@@ -431,32 +435,34 @@ async def converse(
                     exc_type=type(exc).__name__,
                 )
 
-            audio = synthesize_speech(sentence)
-            if first_audio_ms is None:
-                first_audio_ms = round(
-                    (time.perf_counter() - started_at) * 1000, 1
+            with span("tts_sentence"):
+                audio = synthesize_speech(sentence)
+                if first_audio_ms is None:
+                    first_audio_ms = round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                yield _ndjson_event(
+                    {
+                        "type": "audio",
+                        "data": base64.b64encode(audio).decode("ascii"),
+                        "text": sentence,
+                    }
                 )
-            yield _ndjson_event(
-                {
-                    "type": "audio",
-                    "data": base64.b64encode(audio).decode("ascii"),
-                    "text": sentence,
-                }
-            )
 
         try:
             yield _ndjson_event({"type": "transcript", "text": user_text})
-            for chunk in stream_reply(session_id, user_text, context):
-                reply_parts.append(chunk)
-                buffer += chunk
-                ready, buffer = split_sentences(buffer)
-                for sentence in ready:
-                    if first_sentence_ms is None:
-                        first_sentence_ms = round(
-                            (time.perf_counter() - started_at) * 1000, 1
-                        )
-                    sentences += 1
-                    yield from sentence_audio_events(sentence)
+            with span("gemini_stream"):
+                for chunk in stream_reply(session_id, user_text, context):
+                    reply_parts.append(chunk)
+                    buffer += chunk
+                    ready, buffer = split_sentences(buffer)
+                    for sentence in ready:
+                        if first_sentence_ms is None:
+                            first_sentence_ms = round(
+                                (time.perf_counter() - started_at) * 1000, 1
+                            )
+                        sentences += 1
+                        yield from sentence_audio_events(sentence)
             if buffer.strip():
                 sentence = buffer.strip()
                 if first_sentence_ms is None:

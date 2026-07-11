@@ -9,3 +9,6 @@ google-cloud-texttospeech==2.*
 google-cloud-speech==2.*
 pydantic==2.*
 tzdata==2025.*
+opentelemetry-sdk==1.*
+opentelemetry-instrumentation-fastapi==0.*
+opentelemetry-exporter-gcp-trace==1.*
