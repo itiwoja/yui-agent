@@ -74,6 +74,34 @@
 
 ---
 
+## 🔧 改善パス v2（2026-07-11・Fable計画→Codex実装）— 残TOP3を潰す
+
+計画 `docs/plan-hardening-v2.md`（Fable段階計画）→ Codex実装 → ruff/pytest検証。テスト 26→**40本**（+14）。
+
+- [x] **弱点#1 捕捉精度の抑制＋実証**（最大残リスク）
+  - `extraction.py` に `confidence(0-1)` フィールド＋プロンプト指示。`/process`（独り言＝高ノイズ）のみ
+    `confidence.filter_confident` で `YUI_CONFIDENCE_THRESHOLD`(既定0.6) 未満を除去（`/chat` は非適用）。
+    構造化出力スキーマが confidence を強制するので、欠落時は抽出失敗→空返し＝**誤タスクを作らない安全側**。
+  - **精度評価ハーネス**: `bench/extraction_metrics.py`(純・precision/recall/FP率) ＋ `bench/extraction_samples.json`
+    (12件・task6/none6) ＋ `bench/extraction_eval.py`(実Gemini手動実行)。**精度を測定可能化**＝「未実証」に回答。
+- [x] **弱点#2 状態一目表示**（`static/index.html`）
+  - `🎧 聞いてるよ（呼ぶときは「ゆい」）` / `📝 メモしたよ` / `💭 考えてる…` / `💬 話してる…`。
+  - **会話継続窓のカウントダウン** `💬 会話中（名前なしでOK・あと○秒）` を毎秒更新（ambient時のみ・ticker start/stop検証済）。
+- [x] **弱点#3 research/draft 自己検証**（最重要#1を 8→9）
+  - `agent_verify.plan_after_verification`(純) ＋ `agent_loop._verify`(Gemini)。note が前進に不十分なら
+    **in_progress にせず** ask（新規質問のみ・重複は monitor）/ monitor へ降格。
+- [x] **軽い実装: transient リトライ**（`retry.call_with_retry`・stdlib）
+  - 一時障害(503/429/timeout等)を指数バックオフで最大3回。extraction/chat/agent_loop/autonomous_review の
+    `generate_content` を包む（失敗後リトライ＝二重課金なし）。sleep注入でテスト済。
+- [x] **軽い実装: ERROR ログのアラート**（`docs/cicd-setup.md`・運用手順）
+
+**検証（私が独立実行）**: `ruff check .` 緑 / `compileall`（bench eval含む）緑 / フル `pytest` **40 passed**。
+既存の飽和ガード(`last_reviewed_at`/`SYSTEM_ESCALATION_CEILING`)・認証・記憶ロジックに**回帰なし**を確認。
+
+**残（コード外）**: 会場調整の決定値デフォルト反映＝リハ実測待ち。デモで false-positive を出さない台本＝運用。
+
+---
+
 ## 🐞 テストで発見した本番バグ（副産物）
 
 - [x] **`ZoneInfo("Asia/Tokyo")` が import 時にクラッシュ**（`calendar_client.py`）

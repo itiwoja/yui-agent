@@ -12,7 +12,9 @@ from google.genai import types
 from google.cloud import firestore
 from pydantic import BaseModel, Field
 
+from agent_verify import plan_after_verification
 from dedup import is_duplicate
+from retry import call_with_retry
 from tasks_client import upsert_task
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
@@ -32,6 +34,11 @@ DIAGNOSE_INSTRUCTION = """あなたはタスク管理秘書「ゆい」です。
 
 不確かな時はresearchやdraftで憶測するより、askで確認する方を優先してください。"""
 
+VERIFY_INSTRUCTION = """エージェントがaction（researchまたはdraft）で作ったnoteが、
+このタスクを実際に前進させる具体的で有用な内容かを判定してください。
+不十分ならfollowup_actionをaskまたはmonitorにしてください。askの場合は、ユーザーが
+答えやすい具体的なquestionを1つだけ返してください。"""
+
 
 class Diagnosis(BaseModel):
     action: str = Field(description="research, draft, ask, monitor のいずれか")
@@ -40,6 +47,12 @@ class Diagnosis(BaseModel):
 
 class DraftResult(BaseModel):
     content: str = Field(description="下書き・調査結果の本文")
+
+
+class Verification(BaseModel):
+    sufficient: bool
+    followup_action: str = Field(default="", description="空文字、ask、monitorのいずれか")
+    question: str = Field(default="", description="askの場合の具体的な質問")
 
 
 def _client() -> genai.Client:
@@ -53,15 +66,17 @@ def _db() -> firestore.Client:
 def _diagnose(title: str, reason: str) -> Diagnosis:
     client = _client()
     prompt = f"タスク: {title}\n背景: {reason}"
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            system_instruction=DIAGNOSE_INSTRUCTION,
-            temperature=0,
-            response_mime_type="application/json",
-            response_schema=Diagnosis,
-        ),
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=DIAGNOSE_INSTRUCTION,
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=Diagnosis,
+            ),
+        )
     )
     return Diagnosis.model_validate_json(response.text)
 
@@ -72,13 +87,15 @@ def _research(title: str, reason: str) -> str:
         f"タスク「{title}」（背景: {reason}）に取り組むうえで役立つ、"
         "最新かつ具体的な情報を日本語で2〜3文にまとめてください。"
     )
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
     )
     return response.text.strip()
 
@@ -89,16 +106,36 @@ def _draft(title: str, reason: str) -> str:
         f"タスク「{title}」（背景: {reason}）について、ユーザーがすぐ手を加えられる"
         "たたき台・下書き・アウトラインを日本語で作成してください。長すぎないように。"
     )
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.3,
-            response_mime_type="application/json",
-            response_schema=DraftResult,
-        ),
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema=DraftResult,
+            ),
+        )
     )
     return DraftResult.model_validate_json(response.text).content
+
+
+def _verify(title: str, reason: str, action: str, note: str) -> Verification:
+    client = _client()
+    prompt = f"タスク: {title}\n背景: {reason}\naction: {action}\nnote: {note}"
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                system_instruction=VERIFY_INSTRUCTION,
+                temperature=0,
+                response_mime_type="application/json",
+                response_schema=Verification,
+            ),
+        )
+    )
+    return Verification.model_validate_json(response.text)
 
 
 def run_agent_loop() -> dict:
@@ -118,15 +155,22 @@ def run_agent_loop() -> dict:
         diagnosis = _diagnose(title, reason)
         update = {}
 
-        if diagnosis.action == "research":
-            note = _research(title, reason)
-            update = {"status": "in_progress", "agent_notes": note, "pending_question": None}
-            progressed.append({"title": title, "action": "research", "note": note})
-
-        elif diagnosis.action == "draft":
-            note = _draft(title, reason)
-            update = {"status": "in_progress", "agent_notes": note, "pending_question": None}
-            progressed.append({"title": title, "action": "draft", "note": note})
+        if diagnosis.action in {"research", "draft"}:
+            action = diagnosis.action
+            note = _research(title, reason) if action == "research" else _draft(title, reason)
+            verification = _verify(title, reason, action, note)
+            plan = plan_after_verification(
+                note,
+                verification.sufficient,
+                verification.followup_action,
+                verification.question,
+                asked_questions,
+            )
+            update = plan["update"]
+            if plan["outcome"] == "progressed":
+                progressed.append({"title": title, "action": action, "note": note})
+            elif plan["outcome"] == "asked":
+                asked.append({"title": title, "question": plan["question"]})
 
         elif diagnosis.action == "ask":
             question = diagnosis.question or "この件、詳しく教えてもらえますか？"

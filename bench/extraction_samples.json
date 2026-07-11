@@ -1,0 +1,62 @@
+[
+  {
+    "utterance": "今日中に経費精算を提出しないと。",
+    "expect": "task",
+    "note": "明確なタスクと期限"
+  },
+  {
+    "utterance": "金曜の午後3時までに田中さんへ見積書を送る。",
+    "expect": "task",
+    "note": "送付先と期限が明確"
+  },
+  {
+    "utterance": "牛乳を買って、クリーニングも受け取らなきゃ。",
+    "expect": "task",
+    "note": "複数タスク"
+  },
+  {
+    "utterance": "来月の出張ホテルを予約しておこう。",
+    "expect": "task",
+    "note": "明確な予定タスク"
+  },
+  {
+    "utterance": "資料、なんかいい感じにあれしといて……いや違うな。",
+    "expect": "none",
+    "note": "具体性のない曖昧な独り言"
+  },
+  {
+    "utterance": "えっと かいぎの ほら あの しりょ たぶん。",
+    "expect": "none",
+    "note": "STT誤りを想定した断片"
+  },
+  {
+    "utterance": "今日は風が気持ちいいな。",
+    "expect": "none",
+    "note": "タスクでない雑談"
+  },
+  {
+    "utterance": "このコーヒー、思ったより苦い。",
+    "expect": "none",
+    "note": "単なる感想"
+  },
+  {
+    "utterance": "ゆい、今日の予定を教えて。",
+    "expect": "none",
+    "note": "ゆい自身への会話であり登録タスクではない"
+  },
+  {
+    "utterance": "ゆい、ありがとう。助かったよ。",
+    "expect": "none",
+    "note": "ゆい自身への挨拶"
+  },
+  {
+    "utterance": "明日の朝、歯医者に予約変更の電話をする。",
+    "expect": "task",
+    "note": "日時と行動が明確"
+  },
+  {
+    "utterance": "企画書の構成を見直して、完成版をチームに共有する。",
+    "expect": "task",
+    "note": "連続する具体的な作業"
+  }
+]

@@ -10,6 +10,7 @@ from google.genai import types
 from google.cloud import firestore
 
 from priority import MAX_PRIORITY, promote
+from retry import call_with_retry
 from tasks_client import upsert_task
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
@@ -37,13 +38,15 @@ def _research(title: str, reason: str) -> str:
         f"タスク「{title}」（背景: {reason}）に取り組むうえで役立つ、"
         "最新かつ具体的な情報を日本語で2〜3文にまとめてください。"
     )
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0,
-            tools=[types.Tool(google_search=types.GoogleSearch())],
-        ),
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0,
+                tools=[types.Tool(google_search=types.GoogleSearch())],
+            ),
+        )
     )
     return response.text.strip()
 

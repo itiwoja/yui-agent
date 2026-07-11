@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 import obs
 from calendar_client import get_today_events
 from extraction import ExtractedTask
+from retry import call_with_retry
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
@@ -103,17 +104,19 @@ def chat_turn(session_id: str, user_text: str, known_titles: list[str]) -> ChatR
     contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
 
     client = _client()
-    response = client.models.generate_content(
-        model=MODEL,
-        contents=contents,
-        config=types.GenerateContentConfig(
-            system_instruction=(
-                CHAT_SYSTEM_INSTRUCTION + COMPLETION_INSTRUCTION + CALENDAR_INSTRUCTION
+    response = call_with_retry(
+        lambda: client.models.generate_content(
+            model=MODEL,
+            contents=contents,
+            config=types.GenerateContentConfig(
+                system_instruction=(
+                    CHAT_SYSTEM_INSTRUCTION + COMPLETION_INSTRUCTION + CALENDAR_INSTRUCTION
+                ),
+                temperature=0.4,
+                response_mime_type="application/json",
+                response_schema=ChatResult,
             ),
-            temperature=0.4,
-            response_mime_type="application/json",
-            response_schema=ChatResult,
-        ),
+        )
     )
     result = ChatResult.model_validate_json(response.text)
 

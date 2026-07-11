@@ -3,6 +3,8 @@
 MVP パイプライン:
     対話入力 → Gemini(タスク抽出・優先度・理由) → Firestore(記憶・優先度昇格) → Google Tasks
 """
+import os
+
 from fastapi import Depends, FastAPI, Request, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -11,6 +13,7 @@ from agent_loop import answer_question, list_tasks, run_agent_loop
 from auth import require_app_token
 from autonomous_review import run_autonomous_review
 from chat import chat_turn
+from confidence import filter_confident
 from extraction import extract_tasks
 from matching import titles_match
 import obs
@@ -28,6 +31,7 @@ from tts import synthesize_speech
 app = FastAPI(title="Yui Cloud Agent")
 
 APP_VERSION = "0.7.0"
+CONFIDENCE_THRESHOLD = float(os.environ.get("YUI_CONFIDENCE_THRESHOLD", "0.6"))
 
 
 @app.get("/health")
@@ -48,9 +52,10 @@ def process(request: UtteranceRequest) -> dict:
         # 独り言の抽出はベストエフォート。失敗しても待機を止めない（空で返す）。
         obs.error("extract_tasks failed", route="/process", detail=str(exc))
         return {"tasks": []}
+    confident_tasks = filter_confident(extracted.tasks, CONFIDENCE_THRESHOLD)
     resolved = [
         record_and_resolve(task.title, task.priority, task.reason)
-        for task in extracted.tasks
+        for task in confident_tasks
     ]
     for task in resolved:
         upsert_task(task["title"], task["priority"], task["reason"])

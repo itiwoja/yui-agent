@@ -148,6 +148,8 @@ const CONVERSATION_WINDOW_MS = queryNumber('conversation', 45000, 1000, 300000);
 
 let ambientActive = false;
 let conversationActiveUntil = 0;
+let currentState = 'off';
+let tickerTimer = null;
 let stream = null;
 let audioCtx = null;
 let analyser = null;
@@ -161,24 +163,35 @@ let currentAudio = null;
 let currentAudioUrl = null;
 let currentAudioResolve = null;
 
+function updateAmbientStatus() {
+  const now = Date.now();
+  if (now < conversationActiveUntil) {
+    const seconds = Math.ceil((conversationActiveUntil - now) / 1000);
+    statusEl.textContent = `💬 会話中（名前なしでOK・あと${seconds}秒）`;
+  } else {
+    statusEl.textContent = '🎧 聞いてるよ（呼ぶときは「ゆい」）';
+  }
+}
+
 function setState(state) {
+  currentState = state;
   orb.classList.remove('ambient', 'captured', 'thinking', 'speaking');
   if (state === 'ambient') {
     orb.textContent = '🎧';
     orb.classList.add('ambient');
-    statusEl.textContent = '待機中…（呼びかけると反応します）';
+    updateAmbientStatus();
   } else if (state === 'captured') {
     orb.textContent = '📝';
     orb.classList.add('captured');
-    statusEl.textContent = 'メモしました';
+    statusEl.textContent = '📝 メモしたよ';
   } else if (state === 'thinking') {
     orb.textContent = '💭';
     orb.classList.add('thinking');
-    statusEl.textContent = 'ゆいが考えています…';
+    statusEl.textContent = '💭 考えてる…';
   } else if (state === 'speaking') {
     orb.textContent = '💬';
     orb.classList.add('speaking');
-    statusEl.textContent = 'ゆいが話しています…';
+    statusEl.textContent = '💬 話してる…';
   } else {
     orb.textContent = '🎧';
     statusEl.textContent = 'オフになっています';
@@ -349,6 +362,11 @@ async function enableAmbient() {
   source.connect(analyser);
 
   ambientActive = true;
+  if (!tickerTimer) {
+    tickerTimer = setInterval(() => {
+      if (currentState === 'ambient') updateAmbientStatus();
+    }, 1000);
+  }
   toggleBtn.textContent = 'オフにする';
   toggleBtn.classList.add('on');
   const hintKey = 'yui_initial_hint_shown';
@@ -365,6 +383,7 @@ async function enableAmbient() {
 function disableAmbient() {
   ambientActive = false;
   conversationActiveUntil = 0;
+  if (tickerTimer) { clearInterval(tickerTimer); tickerTimer = null; }
   stopVadWatch();
   if (mediaRecorder && mediaRecorder.state === 'recording') mediaRecorder.stop();
   stopCurrentAudio();
