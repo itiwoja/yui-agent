@@ -20,12 +20,22 @@ from fastapi import HTTPException, Request
 APP_TOKEN_ENV = "YUI_APP_TOKEN"
 
 
+def _clean(value: str) -> str:
+    """先頭BOM（﻿）と前後空白を除去する。
+
+    WindowsでSecret Managerに値を入れると、PowerShellのパイプ等でUTF-8 BOMが
+    先頭に混入することがある（既存の google-tasks-refresh-token でも lstrip("﻿")
+    しているのと同じ罠）。str.strip() はBOMを空白扱いしないため明示的に落とす。
+    """
+    return (value or "").lstrip("﻿").strip()
+
+
 def is_authorized(expected: str, provided: str) -> bool:
     """トークン検証の純ロジック。expected 未設定なら常に許可（dev）。"""
-    expected = (expected or "").strip()
+    expected = _clean(expected)
     if not expected:
         return True
-    provided = (provided or "").strip()
+    provided = _clean(provided)
     if not provided:
         return False
     return secrets.compare_digest(provided, expected)

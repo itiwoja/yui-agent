@@ -21,3 +21,9 @@ def test_missing_token_is_rejected_when_configured():
 
 def test_whitespace_is_trimmed_both_sides():
     assert is_authorized("s3cret", "  s3cret  ") is True
+
+
+def test_bom_prefix_is_ignored():
+    # WindowsのSecret Manager経由で先頭にBOMが混入しても正しく突合する
+    assert is_authorized("﻿s3cret", "s3cret") is True
+    assert is_authorized("s3cret", "﻿s3cret") is True
