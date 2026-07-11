@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from agent_loop import answer_question, list_tasks, run_agent_loop
 from auth import assert_token_configured, require_app_token
 from autonomous_review import run_autonomous_review
-from chat import append_chat_history, chat_turn, stream_reply
+from chat import append_chat_history, chat_turn, prefetch_context, stream_reply
 from confidence import filter_confident
 from dialog_actions import extract_dialog_actions
 from extraction import extract_tasks
@@ -326,11 +326,30 @@ async def converse(
     """Stream STT, Gemini, and sentence-level TTS as NDJSON."""
     started_at = time.perf_counter()
     audio_bytes = await request.body()
+    prefetch_started_at = time.perf_counter()
+    context_future = asyncio.get_event_loop().run_in_executor(
+        None, prefetch_context, session_id
+    )
     if len(audio_bytes) > MAX_AUDIO_BYTES:
+        try:
+            await context_future
+        except Exception:
+            pass
         raise HTTPException(status_code=413, detail="audio payload too large")
     try:
         user_text = await asyncio.to_thread(transcribe_audio, audio_bytes)
     except Exception as exc:
+        try:
+            await context_future
+        except Exception as context_exc:
+            obs.warning(
+                "converse context prefetch failed",
+                route="/converse",
+                request_id=request.state.request_id,
+                session_id=session_id,
+                detail=str(context_exc),
+                exc_type=type(context_exc).__name__,
+            )
         obs.error(
             "transcribe_audio failed",
             route="/converse",
@@ -348,10 +367,24 @@ async def converse(
     stt_ms = round((time.perf_counter() - started_at) * 1000, 1)
     user_text = user_text.strip()
     if not user_text:
+        try:
+            await context_future
+        except Exception as context_exc:
+            obs.warning(
+                "converse context prefetch failed",
+                route="/converse",
+                request_id=request.state.request_id,
+                session_id=session_id,
+                detail=str(context_exc),
+                exc_type=type(context_exc).__name__,
+            )
         return StreamingResponse(
             iter([_ndjson_event({"type": "empty"})]),
             media_type="application/x-ndjson",
         )
+
+    context = await context_future
+    prefetch_ms = round((time.perf_counter() - prefetch_started_at) * 1000, 1)
 
     reply_parts: list[str] = []
     completed: list[bool] = []
@@ -370,7 +403,7 @@ async def converse(
         first_audio_ms: float | None = None
         try:
             yield _ndjson_event({"type": "transcript", "text": user_text})
-            for chunk in stream_reply(session_id, user_text):
+            for chunk in stream_reply(session_id, user_text, context):
                 reply_parts.append(chunk)
                 buffer += chunk
                 ready, buffer = split_sentences(buffer)
@@ -420,6 +453,7 @@ async def converse(
                 request_id=request.state.request_id,
                 session_id=session_id,
                 stt_ms=stt_ms,
+                prefetch_ms=prefetch_ms,
                 first_sentence_ms=first_sentence_ms,
                 first_audio_ms=first_audio_ms,
                 total_ms=round((time.perf_counter() - started_at) * 1000, 1),

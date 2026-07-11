@@ -1,4 +1,6 @@
 """会話レイテンシ設定の検証。"""
+import pytest
+
 import chat
 
 
@@ -110,4 +112,54 @@ def test_chat_turn_uses_open_tasks_fetcher_for_known_titles(monkeypatch):
 
     assert result.reply == "done"
     assert returned_open_tasks == open_tasks
+    assert "Submit report" in captured["contents"][-1].parts[0].text
+
+
+def test_prefetch_context_returns_all_reply_context(monkeypatch):
+    monkeypatch.setattr(
+        chat, "get_history", lambda _session_id: [{"role": "user", "text": "hi"}]
+    )
+    monkeypatch.setattr(
+        chat,
+        "get_today_events",
+        lambda: [{"summary": "Standup", "start": "09:00", "end": "09:30"}],
+    )
+    monkeypatch.setattr(chat, "find_open_tasks", lambda: [{"title": "Submit report"}])
+
+    context = chat.prefetch_context("session")
+
+    assert context == {
+        "history": [{"role": "user", "text": "hi"}],
+        "today_events": [{"summary": "Standup", "start": "09:00", "end": "09:30"}],
+        "open_tasks": [{"title": "Submit report"}],
+    }
+
+
+def test_stream_reply_uses_supplied_context_without_refetching(monkeypatch):
+    captured = {}
+
+    class FakeModels:
+        def generate_content_stream(self, **kwargs):
+            captured.update(kwargs)
+            return [type("Chunk", (), {"text": "done"})()]
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(chat, "_client", lambda: FakeClient())
+    monkeypatch.setattr(chat, "prefetch_context", lambda _session_id: pytest.fail("refetched context"))
+
+    result = list(
+        chat.stream_reply(
+            "session",
+            "hello",
+            {
+                "history": [],
+                "today_events": [],
+                "open_tasks": [{"title": "Submit report"}],
+            },
+        )
+    )
+
+    assert result == ["done"]
     assert "Submit report" in captured["contents"][-1].parts[0].text

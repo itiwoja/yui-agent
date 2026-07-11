@@ -3,6 +3,7 @@ import os
 import time
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
+from typing import TypedDict
 
 from google.genai import types
 from google.cloud import firestore
@@ -19,6 +20,14 @@ MODEL = DEFAULT_MODEL
 CONVERSATIONS_COLLECTION = "conversations"
 DEFAULT_THINKING_BUDGET = 512
 DEFAULT_HISTORY_LIMIT = 12
+
+
+class ContextBundle(TypedDict):
+    """The external data needed to form a chat reply."""
+
+    history: list[dict]
+    today_events: list[dict[str, str]]
+    open_tasks: list[dict]
 
 
 def _thinking_budget() -> int:
@@ -141,6 +150,34 @@ def append_chat_history(session_id: str, user_text: str, reply: str) -> None:
         )
 
 
+def prefetch_context(session_id: str) -> ContextBundle:
+    """Fetch reply context concurrently while speech recognition is running."""
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        history_future = executor.submit(get_history, session_id)
+        calendar_future = executor.submit(get_today_events)
+        open_tasks_future = executor.submit(find_open_tasks)
+
+        history = history_future.result()
+        try:
+            today_events = calendar_future.result()
+        except Exception as exc:
+            obs.warning(
+                "failed to get today's events",
+                api="calendar",
+                session_id=session_id,
+                detail=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            today_events = []
+        open_tasks = open_tasks_future.result()
+
+    return {
+        "history": history,
+        "today_events": today_events,
+        "open_tasks": open_tasks,
+    }
+
+
 def chat_turn(
     session_id: str,
     user_text: str,
@@ -235,26 +272,18 @@ def chat_turn(
 def stream_reply(
     session_id: str,
     user_text: str,
-    open_tasks_fetcher=find_open_tasks,
+    context: ContextBundle | None = None,
 ):
-    """Yield Gemini reply text as it arrives, without waiting for JSON output."""
-    with ThreadPoolExecutor(max_workers=3) as executor:
-        history_future = executor.submit(get_history, session_id)
-        calendar_future = executor.submit(get_today_events)
-        open_tasks_future = executor.submit(open_tasks_fetcher)
-        history = history_future.result()
-        try:
-            today_events = calendar_future.result()
-        except Exception as exc:
-            obs.warning(
-                "failed to get today's events",
-                api="calendar",
-                session_id=session_id,
-                detail=str(exc),
-                exc_type=type(exc).__name__,
-            )
-            today_events = []
-        open_tasks = open_tasks_future.result()
+    """Yield Gemini reply text as it arrives, without waiting for JSON output.
+
+    A caller may provide context fetched in parallel with another operation.  The
+    fallback keeps this function usable for non-streaming callers.
+    """
+    if context is None:
+        context = prefetch_context(session_id)
+    history = context["history"]
+    today_events = context["today_events"]
+    open_tasks = context["open_tasks"]
 
     known_titles = [task["title"] for task in open_tasks if task.get("title")]
     contents = [
