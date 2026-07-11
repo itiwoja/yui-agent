@@ -21,6 +21,7 @@ STALENESS_HOURS = float(os.environ.get("STALENESS_HOURS", "6"))
 # システムが自律的に上げられる上限。既定は MAX（従来挙動）。下げれば🔴を人間の緊急に残せる。
 SYSTEM_ESCALATION_CEILING = int(os.environ.get("SYSTEM_ESCALATION_CEILING", str(MAX_PRIORITY)))
 RESEARCH_PRIORITY_THRESHOLD = 4
+REVIEW_LIMIT = int(os.environ.get("YUI_REVIEW_LIMIT", "500"))
 
 
 def _client() -> genai.Client:
@@ -56,7 +57,11 @@ def run_autonomous_review() -> dict:
     now = datetime.now(timezone.utc)
     stale_cutoff = now - timedelta(hours=STALENESS_HOURS)
 
-    docs = db.collection(COLLECTION).where("priority", "<", MAX_PRIORITY).get()
+    # status の追加絞り込みは複合インデックスを要求し、本番を壊すおそれがあるため避ける。
+    # 現行のインデックス不要なクエリのまま、無制限スキャンだけを防ぐ。
+    docs = db.collection(COLLECTION).where("priority", "<", MAX_PRIORITY).limit(
+        REVIEW_LIMIT
+    ).get()
 
     escalated = []
     researched = []

@@ -8,7 +8,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from bench.extraction_metrics import score  # noqa: E402
+from bench.extraction_metrics import format_report, score  # noqa: E402
 from confidence import filter_confident  # noqa: E402
 from extraction import extract_tasks  # noqa: E402
 
@@ -18,24 +18,32 @@ def main() -> None:
     parser.add_argument(
         "--threshold",
         type=float,
-        help="指定時はconfidenceしきい値適用後のメトリクスも表示する",
+        default=0.6,
+        help="confidenceしきい値（既定: 0.6）",
+    )
+    parser.add_argument(
+        "--sweep",
+        action="store_true",
+        help="0.0, 0.3, 0.5, 0.6, 0.7, 0.8 のしきい値を比較する",
+    )
+    parser.add_argument(
+        "--out",
+        type=Path,
+        help="Markdownレポートの出力先（例: bench/results/extraction-eval.md）",
     )
     args = parser.parse_args()
 
     samples_path = Path(__file__).with_name("extraction_samples.json")
     samples = json.loads(samples_path.read_text(encoding="utf-8"))
     predictions = []
-    filtered_predictions = []
+    task_groups = []
     labels = []
 
     for sample in samples:
         result = extract_tasks(sample["utterance"])
         predictions.append(bool(result.tasks))
+        task_groups.append(result.tasks)
         labels.append(sample["expect"] == "task")
-        if args.threshold is not None:
-            filtered_predictions.append(
-                bool(filter_confident(result.tasks, args.threshold))
-            )
         print(
             json.dumps(
                 {
@@ -47,12 +55,45 @@ def main() -> None:
             )
         )
 
-    print("raw:", json.dumps(score(predictions, labels), ensure_ascii=False, indent=2))
-    if args.threshold is not None:
-        print(
-            f"threshold={args.threshold}:",
-            json.dumps(score(filtered_predictions, labels), ensure_ascii=False, indent=2),
+    thresholds = [0.0, 0.3, 0.5, 0.6, 0.7, 0.8] if args.sweep else [args.threshold]
+    raw_score = score(predictions, labels)
+    report_sections = ["# タスク抽出評価\n", format_report(raw_score, None)]
+    threshold_scores = []
+
+    print("raw:", json.dumps(raw_score, ensure_ascii=False, indent=2))
+    for threshold in thresholds:
+        filtered_score = score(
+            [bool(filter_confident(tasks, threshold)) for tasks in task_groups], labels
         )
+        print(
+            f"threshold={threshold}:",
+            json.dumps(filtered_score, ensure_ascii=False, indent=2),
+        )
+        threshold_scores.append((threshold, filtered_score))
+        report_sections.append(format_report(filtered_score, threshold))
+
+    if args.sweep:
+        sweep_rows = [
+            "| threshold | precision | recall | false_positive_rate | accuracy |",
+            "| ---: | ---: | ---: | ---: | ---: |",
+        ]
+        sweep_rows.extend(
+            (
+                "| {threshold:.1f} | {precision:.3f} | {recall:.3f} | "
+                "{false_positive_rate:.3f} | {accuracy:.3f} |"
+            ).format(
+                threshold=threshold,
+                **scored,
+            )
+            for threshold, scored in threshold_scores
+        )
+        report_sections.insert(2, "## しきい値スイープ\n\n" + "\n".join(sweep_rows))
+
+    report = "\n".join(report_sections)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(report, encoding="utf-8")
+        print(f"report: {args.out}")
 
 
 if __name__ == "__main__":

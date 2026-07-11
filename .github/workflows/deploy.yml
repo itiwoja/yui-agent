@@ -56,7 +56,7 @@ jobs:
       - name: Set up Google Cloud CLI
         uses: google-github-actions/setup-gcloud@v2
 
-      - name: Deploy to Cloud Run
+      - name: Deploy canary revision
         run: >-
           gcloud run deploy yui-agent
           --source .
@@ -64,4 +64,29 @@ jobs:
           --project yui-agent-2026
           --allow-unauthenticated
           --set-secrets=YUI_APP_TOKEN=yui-app-token:latest
+          --no-traffic
+          --tag=canary
+          --quiet
+
+      - name: Smoke test canary
+        run: |
+          # describe に --filter は使えず、per-entry url は「タグ付きエントリ」だけに入る。
+          # flatten + CSV で (tag,url) を出し、tag=canary の行の url を取り出す（堅牢）。
+          CANARY_URL="$(gcloud run services describe yui-agent \
+            --region asia-northeast1 \
+            --project yui-agent-2026 \
+            --flatten='status.traffic[]' \
+            --format='csv[no-heading](status.traffic.tag,status.traffic.url)' \
+            | awk -F, '$1=="canary"{print $2}')"
+          # URLが取れなければ移行せずに失敗させる（旧リビジョンが100%のまま＝安全）。
+          test -n "${CANARY_URL}" || { echo "canary URL not found; aborting before traffic migration"; exit 1; }
+          echo "canary: ${CANARY_URL}"
+          curl --fail --show-error --silent "${CANARY_URL}/health"
+
+      - name: Migrate traffic after smoke test
+        run: >-
+          gcloud run services update-traffic yui-agent
+          --region asia-northeast1
+          --project yui-agent-2026
+          --to-latest
           --quiet

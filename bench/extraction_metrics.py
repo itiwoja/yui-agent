@@ -25,3 +25,26 @@ def score(predictions, labels):
         "accuracy": (tp + tn) / n if n else 0.0,
         "n": n,
     }
+
+
+def format_report(scored, threshold):
+    """評価結果をMarkdownの表として整形する。"""
+    threshold_label = "未適用" if threshold is None else f"{threshold:.1f}"
+    rows = [
+        ("件数", str(scored["n"])),
+        ("TP", str(scored["tp"])),
+        ("FP", str(scored["fp"])),
+        ("FN", str(scored["fn"])),
+        ("TN", str(scored["tn"])),
+        ("precision", f"{scored['precision']:.3f}"),
+        ("recall", f"{scored['recall']:.3f}"),
+        ("false_positive_rate", f"{scored['false_positive_rate']:.3f}"),
+        ("accuracy", f"{scored['accuracy']:.3f}"),
+    ]
+    table = "\n".join(f"| {name} | {value} |" for name, value in rows)
+    return (
+        f"## confidence threshold: {threshold_label}\n\n"
+        "| metric | value |\n"
+        "| --- | ---: |\n"
+        f"{table}\n"
+    )

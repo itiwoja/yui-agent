@@ -102,6 +102,36 @@
 
 ---
 
+## 🔧 改善パス v3（2026-07-11・Fable計画→Codex実装＋ライブ実行）— 更新TOP3
+
+計画 `docs/plan-hardening-v3.md`。Codexが実装、ADC/gcloud/ブラウザ要る部分はライブ実行。テスト 41→**42本**。
+
+- [x] **弱点#1 捕捉精度の"実測値"を産出**（最重要・実証）
+  - `bench/extraction_eval.py` を `--sweep`/`--out`/`--threshold` 対応に強化、サンプルを **20件**（task10/none10、
+    STT誤り断片・曖昧独り言・**ゆい自身への命令**「ゆい、タスク見せて」等の誤爆トラップ込み）に拡充。
+  - **実Gemini(ADC)で実測**: precision **1.000** / recall **1.000** / false_positive_rate **0.000**（n=20、全しきい値で同一）。
+    → レポート `bench/results/extraction-eval.md`。「未実証」を**実測ゼロ誤爆**に更新。
+  - 正直な留保: ハンドメイド20件で満点＝実音声より易しい可能性。実キャプチャでの拡充が次の硬い検証（ハーネスは常設化済）。
+- [x] **弱点#2 実機（ブラウザ）検証**（Claude-in-Chrome）
+  - 本番URL `https://yui-agent-h5usermlua-an.a.run.app/` を実ブラウザでロード → 状態ラベル
+    「🎧 聞いてるよ」「💭 考えてる…」「📝 メモしたよ」、**会話中カウントダウン「💬 会話中（あと45秒）」**の描画を実機確認。`/health`→200。
+  - 留保: 音声/マイクの自動化は不可＝手動リハに委ねる（UIレイヤは実機検証済）。
+- [x] **弱点#3 運用の詰め**
+  - **スケール防御**: `agent_loop.list_tasks`（`YUI_LIST_LIMIT` 既定200）・`autonomous_review`（既定500）に `.limit()` 追加。
+    サーバサイド絞り込みは複合インデックス要のため**あえて回避**（インデックス不要設計を維持）とコメント明記。
+  - **カナリアデプロイ**（`deploy.yml`）: `--no-traffic --tag=canary` → カナリア`/health`スモーク → 成功時のみ `--to-latest`。
+    失敗時は移行せず旧リビジョンが100%のまま＝fail-safe。
+  - **ERRORアラート**: `scripts/setup_error_alert.ps1`（email通知チャンネル＋severity>=ERRORログベースポリシー・冪等）を用意。
+    ※本番プロビジョンは `gcloud components install beta` が必要（当環境は未導入）＝**ユーザー実行に委ねる**。
+
+**🐞 v3で捕まえたバグ（Fable検証の効き）**: Codexのカナリア初版が `--format='value(status.traffic.filter(tag=canary).url)'`
+＝**gcloudで無効な書式**（describeに`filter()`transform不可）。放置すると**カナリアURLが空→スモーク失敗→毎回デプロイが
+traffic移行できず壊れる**。ライブでgcloud書式を検証して発見し、`--flatten='status.traffic[]'`＋CSV＋awk＋空ガードに修正。
+
+**検証**: ruff緑 / compileall緑 / フルpytest **42 passed** / 実Gemini評価が満点 / 実ブラウザで本番UI確認 / カナリア書式をライブ検証。
+
+---
+
 ## 🐞 テストで発見した本番バグ（副産物）
 
 - [x] **`ZoneInfo("Asia/Tokyo")` が import 時にクラッシュ**（`calendar_client.py`）

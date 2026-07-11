@@ -1,4 +1,4 @@
-from bench.extraction_metrics import score
+from bench.extraction_metrics import format_report, score
 
 
 def test_score_known_predictions():
@@ -37,3 +37,24 @@ def test_score_rejects_different_lengths():
         assert "same length" in str(exc)
     else:
         raise AssertionError("ValueError was not raised")
+
+
+def test_format_report_renders_metrics_as_markdown_table():
+    report = format_report(
+        {
+            "n": 4,
+            "tp": 2,
+            "fp": 1,
+            "fn": 0,
+            "tn": 1,
+            "precision": 2 / 3,
+            "recall": 1.0,
+            "false_positive_rate": 0.5,
+            "accuracy": 0.75,
+        },
+        0.6,
+    )
+
+    assert "## confidence threshold: 0.6" in report
+    assert "| metric | value |" in report
+    assert "| false_positive_rate | 0.500 |" in report

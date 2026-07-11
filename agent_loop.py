@@ -21,6 +21,7 @@ PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
 MODEL = "gemini-2.5-flash"
 COLLECTION = "task_mentions"
+LIST_LIMIT = int(os.environ.get("YUI_LIST_LIMIT", "200"))
 
 DIAGNOSE_INSTRUCTION = """あなたはタスク管理秘書「ゆい」です。1つのタスクについて、
 次にどう動くべきかを判断してください。
@@ -224,9 +225,11 @@ def answer_question(doc_id: str, answer: str) -> dict:
 
 def list_tasks() -> list[dict]:
     db = _db()
+    # status のサーバー側絞り込みは複合インデックスを要求し、本番を壊すおそれがある。
+    # インデックス不要の現行設計を保ち、取得件数だけを安全に制限する。
     docs = db.collection(COLLECTION).order_by(
         "last_mentioned_at", direction=firestore.Query.DESCENDING
-    ).get()
+    ).limit(LIST_LIMIT).get()
     tasks = []
     for doc in docs:
         data = doc.to_dict()

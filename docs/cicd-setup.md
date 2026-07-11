@@ -243,49 +243,9 @@ git push origin --delete master
 ## 8. ERRORログのアラート
 
 `obs.py` が出力する `severity=ERROR` の構造化ログをCloud Monitoringで検知する。
-まず通知先（メール、Slackなど）のチャンネルIDを確認する。この操作にはMonitoringの
-アラートポリシーと通知チャンネルを参照・作成できる権限が必要なため、リポジトリ管理者が実行する。
+リポジトリ管理者が、メールアドレスを指定して次を一度実行する。既存の同名チャンネルと
+ポリシーは再利用するため、繰り返し実行できる。
 
-```bash
-gcloud beta monitoring channels list \
-  --project="${PROJECT_ID}" \
-  --format='table(name,displayName,type)'
-
-export NOTIFICATION_CHANNEL="projects/${PROJECT_ID}/notificationChannels/CHANNEL_ID"
+```powershell
+.\scripts\setup_error_alert.ps1 -Email "alerts@example.com"
 ```
-
-次の内容を `yui-error-alert.yaml` として保存する。フィルタはCloud Runの
-`yui-agent` サービスで発生したERROR以上のログだけを対象にする。
-
-```yaml
-displayName: Yui Agent ERROR logs
-combiner: OR
-conditions:
-  - displayName: Cloud Run ERROR log detected
-    conditionMatchedLog:
-      filter: >-
-        resource.type="cloud_run_revision" AND
-        severity>=ERROR AND
-        resource.labels.service_name="yui-agent"
-notificationChannels:
-  - projects/yui-agent-2026/notificationChannels/CHANNEL_ID
-alertStrategy:
-  notificationRateLimit:
-    period: 300s
-  autoClose: 604800s
-```
-
-`notificationChannels` を先ほど確認した値に置き換え、ポリシーを作成する。
-
-```bash
-gcloud alpha monitoring policies create \
-  --project="${PROJECT_ID}" \
-  --policy-from-file=yui-error-alert.yaml
-
-gcloud alpha monitoring policies list \
-  --project="${PROJECT_ID}" \
-  --filter='displayName="Yui Agent ERROR logs"'
-```
-
-作成後はCloud Loggingのログエクスプローラで同じフィルタが対象ログに一致すること、
-テスト用ERRORログで通知が届くことを確認する。検証後は不要なテストログを増やさない。
