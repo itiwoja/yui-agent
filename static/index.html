@@ -120,8 +120,16 @@ const sessionId = (() => {
 // X-Yui-Token として付ける。本番は未認証だと保護エンドポイントが401になる。
 const APP_TOKEN = (() => {
   const key = 'yui_app_token';
-  const fromUrl = new URLSearchParams(window.location.search).get('token');
-  if (fromUrl) { sessionStorage.setItem(key, fromUrl); return fromUrl; }
+  const params = new URLSearchParams(window.location.search);
+  const fromUrl = params.get('token');
+  if (fromUrl) {
+    sessionStorage.setItem(key, fromUrl);
+    params.delete('token');
+    const query = params.toString();
+    const cleanUrl = window.location.pathname + (query ? `?${query}` : '') + window.location.hash;
+    history.replaceState(null, '', cleanUrl);
+    return fromUrl;
+  }
   return sessionStorage.getItem(key) || '';
 })();
 

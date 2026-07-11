@@ -5,18 +5,19 @@ MVP パイプライン:
 """
 import os
 
-from fastapi import Depends, FastAPI, Request, Response
+from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from agent_loop import answer_question, list_tasks, run_agent_loop
-from auth import require_app_token
+from auth import assert_token_configured, require_app_token
 from autonomous_review import run_autonomous_review
 from chat import chat_turn
 from confidence import filter_confident
 from extraction import extract_tasks
 from matching import titles_match
 import obs
+from rate_limit import require_rate_limit
 from memory_store import (
     complete_task,
     delete_task,
@@ -32,6 +33,13 @@ app = FastAPI(title="Yui Cloud Agent")
 
 APP_VERSION = "0.7.0"
 CONFIDENCE_THRESHOLD = float(os.environ.get("YUI_CONFIDENCE_THRESHOLD", "0.6"))
+MAX_AUDIO_BYTES = 10 * 1024 * 1024
+
+
+@app.on_event("startup")
+def verify_runtime_configuration() -> None:
+    """本番起動時に fail-open の認証設定を防ぐ。"""
+    assert_token_configured()
 
 
 @app.get("/health")
@@ -40,10 +48,12 @@ def health() -> dict:
 
 
 class UtteranceRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=4000)
 
 
-@app.post("/process", dependencies=[Depends(require_app_token)])
+@app.post(
+    "/process", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
+)
 def process(request: UtteranceRequest) -> dict:
     known_titles = get_recent_titles()
     try:
@@ -63,11 +73,13 @@ def process(request: UtteranceRequest) -> dict:
 
 
 class ChatRequest(BaseModel):
-    session_id: str
-    message: str
+    session_id: str = Field(max_length=128)
+    message: str = Field(max_length=4000)
 
 
-@app.post("/chat", dependencies=[Depends(require_app_token)])
+@app.post(
+    "/chat", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
+)
 def chat(request: ChatRequest) -> dict:
     open_tasks = find_open_tasks()
     known_titles = [task["title"] for task in open_tasks if task.get("title")]
@@ -105,18 +117,24 @@ def chat(request: ChatRequest) -> dict:
 
 
 class SpeechRequest(BaseModel):
-    text: str
+    text: str = Field(max_length=1000)
 
 
-@app.post("/tts", dependencies=[Depends(require_app_token)])
+@app.post(
+    "/tts", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
+)
 def tts(request: SpeechRequest) -> Response:
     audio = synthesize_speech(request.text)
     return Response(content=audio, media_type="audio/mpeg")
 
 
-@app.post("/transcribe", dependencies=[Depends(require_app_token)])
+@app.post(
+    "/transcribe", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
+)
 async def transcribe(request: Request) -> dict:
     audio_bytes = await request.body()
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio payload too large")
     text = transcribe_audio(audio_bytes)
     obs.info("transcribed", route="/transcribe", chars=len(text))
     return {"text": text}
@@ -137,7 +155,7 @@ def get_tasks() -> dict:
 
 
 class AnswerRequest(BaseModel):
-    answer: str
+    answer: str = Field(max_length=2000)
 
 
 @app.post("/tasks/{doc_id}/answer", dependencies=[Depends(require_app_token)])

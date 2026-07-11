@@ -45,6 +45,18 @@ def _expected_token() -> str:
     return os.environ.get(APP_TOKEN_ENV, "")
 
 
+def assert_token_configured() -> None:
+    """Cloud Run ではアプリケーショントークン未設定の起動を拒否する。
+
+    ローカル開発では従来どおり認証なしで動作させるが、Cloud Run を示す
+    ``K_SERVICE`` がある環境で fail-open になることは許可しない。
+    """
+    if os.environ.get("K_SERVICE") and not _clean(_expected_token()):
+        raise RuntimeError(
+            "YUI_APP_TOKEN must be configured when running on Cloud Run"
+        )
+
+
 def require_app_token(request: Request) -> None:
     """FastAPI 依存関数。保護対象ルートに Depends で挿す。"""
     provided = request.headers.get("x-yui-token", "") or request.query_params.get("token", "")

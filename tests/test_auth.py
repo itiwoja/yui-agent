@@ -1,5 +1,29 @@
 """auth.py — トークン検証の純ロジックテスト。"""
-from auth import is_authorized
+import pytest
+
+from auth import assert_token_configured, is_authorized
+
+
+def test_cloud_run_requires_a_configured_token(monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "yui")
+    monkeypatch.delenv("YUI_APP_TOKEN", raising=False)
+
+    with pytest.raises(RuntimeError, match="YUI_APP_TOKEN"):
+        assert_token_configured()
+
+
+def test_cloud_run_accepts_a_configured_token(monkeypatch):
+    monkeypatch.setenv("K_SERVICE", "yui")
+    monkeypatch.setenv("YUI_APP_TOKEN", "configured-token")
+
+    assert_token_configured()
+
+
+def test_local_development_allows_no_token(monkeypatch):
+    monkeypatch.delenv("K_SERVICE", raising=False)
+    monkeypatch.delenv("YUI_APP_TOKEN", raising=False)
+
+    assert_token_configured()
 
 
 def test_open_when_no_token_configured():
