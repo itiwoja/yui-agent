@@ -81,6 +81,15 @@
     text-decoration: none;
   }
   #dashLink:hover { color: var(--accent); }
+
+  /* ---- アクセシビリティ（WCAG 2.2 AA）---- */
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
 </style>
 </head>
 <body>
@@ -88,7 +97,7 @@
   <h1>YUI</h1>
   <button id="toggle" type="button">そばに置く</button>
   <div id="orb" role="button" tabindex="0" aria-label="再生中の音声を停止">🎧</div>
-  <div id="status">オフになっています</div>
+  <div id="status" role="status" aria-live="polite">オフになっています</div>
   <div id="hint" aria-live="polite"></div>
 
 <script>

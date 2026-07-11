@@ -118,9 +118,27 @@
   }
   .complete-button:disabled { opacity: 0.5; cursor: default; }
   .empty { color: var(--sub); font-size: 13px; }
+
+  /* ---- アクセシビリティ（WCAG 2.2 AA）---- */
+  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  .visually-hidden {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0; border: 0;
+    clip-path: inset(50%);
+    overflow: hidden;
+    white-space: nowrap;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation: none !important;
+      transition: none !important;
+    }
+  }
 </style>
 </head>
 <body>
+  <div id="srLive" role="status" aria-live="polite" class="visually-hidden"></div>
   <header>
     <h1>YUI DASHBOARD</h1>
     <a href="/">← 対話に戻る</a>
@@ -147,6 +165,13 @@
 <script>
 const priorityLabel = ['', '⚪', '🟢', '🟡', '🟠', '🔴'];
 
+// スクリーンリーダー通知（再描画で消える操作結果を伝える）
+const srLiveEl = document.getElementById('srLive');
+function announce(text) {
+  srLiveEl.textContent = '';
+  setTimeout(() => { srLiveEl.textContent = text; }, 50);
+}
+
 function card(task, extraClass) {
   const div = document.createElement('div');
   div.className = 'card' + (extraClass ? ' ' + extraClass : '');
@@ -168,6 +193,7 @@ function card(task, extraClass) {
     completeBtn.addEventListener('click', async () => {
       completeBtn.disabled = true;
       await fetch(`/tasks/${task.id}/complete`, { method: 'POST' });
+      announce(`「${task.title}」を完了にしました`);
       load();
     });
     top.appendChild(completeBtn);
@@ -184,6 +210,7 @@ function card(task, extraClass) {
     row.className = 'answer-row';
     const input = document.createElement('input');
     input.placeholder = '答えを入力…';
+    input.setAttribute('aria-label', 'ゆいの質問への答え');
     const btn = document.createElement('button');
     btn.textContent = '送信';
     btn.addEventListener('click', async () => {
@@ -194,6 +221,7 @@ function card(task, extraClass) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ answer: input.value.trim() }),
       });
+      announce('答えを送信しました');
       load();
     });
     row.appendChild(input);
@@ -216,6 +244,9 @@ function hasUnsavedInput() {
 
 async function load() {
   if (hasUnsavedInput()) return; // 回答入力中は再描画で消さない
+  // 入力欄にフォーカス中（未入力でも）は再描画で操作を奪わない（2.4.3）
+  const active = document.activeElement;
+  if (active && active.matches && active.matches('.answer-row input')) return;
 
   const res = await fetch('/tasks');
   const data = await res.json();
