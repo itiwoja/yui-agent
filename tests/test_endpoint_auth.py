@@ -43,3 +43,19 @@ def test_chat_rejected_with_wrong_token():
 def test_autonomous_review_rejected_without_token():
     resp = client.post("/autonomous-review")
     assert resp.status_code == 401
+
+
+def test_tasks_accepts_valid_query_token(monkeypatch):
+    monkeypatch.setattr("main.list_tasks", lambda: [])
+
+    response = client.get("/tasks?token=test-token")
+
+    assert response.status_code != 401
+
+
+def test_tasks_accepts_valid_header_token(monkeypatch):
+    monkeypatch.setattr("main.list_tasks", lambda: [])
+
+    response = client.get("/tasks", headers={"X-Yui-Token": "test-token"})
+
+    assert response.status_code != 401
