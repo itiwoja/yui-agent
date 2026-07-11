@@ -4,19 +4,23 @@ MVP パイプライン:
     対話入力 → Gemini(タスク抽出・優先度・理由) → Firestore(記憶・優先度昇格) → Google Tasks
 """
 import asyncio
+import base64
+import json
 import os
 import time
 import uuid
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request, Response
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from agent_loop import answer_question, list_tasks, run_agent_loop
 from auth import assert_token_configured, require_app_token
 from autonomous_review import run_autonomous_review
-from chat import append_chat_history, chat_turn
+from chat import append_chat_history, chat_turn, stream_reply
 from confidence import filter_confident
+from dialog_actions import extract_dialog_actions
 from extraction import extract_tasks
 from matching import titles_match
 import obs
@@ -24,6 +28,7 @@ from rate_limit import require_rate_limit
 from memory_store import (
     complete_task,
     delete_task,
+    find_open_tasks,
     get_recent_titles,
     record_and_resolve,
 )
@@ -32,6 +37,7 @@ from speech_to_text import MODEL as SPEECH_MODEL
 from speech_to_text import transcribe_audio
 from tasks_client import complete_google_task, delete_google_task, upsert_task
 from tts import synthesize_speech
+from sentence_split import split_sentences
 
 app = FastAPI(title="Yui Cloud Agent")
 
@@ -64,6 +70,55 @@ def _complete_google_task_background(title: str) -> None:
             detail=str(exc),
             exc_type=type(exc).__name__,
         )
+
+
+def _finalize_converse_background(
+    session_id: str,
+    user_text: str,
+    reply_parts: list[str],
+    completed: list[bool],
+) -> None:
+    """Persist a successful streamed turn and apply its task actions."""
+    if not completed:
+        return
+    reply = "".join(reply_parts)
+    if not reply:
+        return
+
+    append_chat_history(session_id, user_text, reply)
+    try:
+        known_titles = get_recent_titles()
+        extracted, completed_titles = extract_dialog_actions(user_text, known_titles)
+        for task in filter_confident(extracted, CONFIDENCE_THRESHOLD):
+            resolved = record_and_resolve(task.title, task.priority, task.reason)
+            _upsert_task_background(
+                resolved["title"], resolved["priority"], resolved["reason"]
+            )
+
+        open_tasks = find_open_tasks()
+        matched_ids = set()
+        for candidate in completed_titles:
+            for task in open_tasks:
+                if task["id"] in matched_ids:
+                    continue
+                if titles_match(candidate, task.get("title", "")):
+                    complete_task(task["id"])
+                    _complete_google_task_background(task["title"])
+                    matched_ids.add(task["id"])
+                    break
+    except Exception as exc:
+        obs.error(
+            "converse dialog actions failed",
+            route="/converse",
+            api="gemini",
+            session_id=session_id,
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
+
+
+def _ndjson_event(event: dict) -> str:
+    return json.dumps(event, ensure_ascii=False) + "\n"
 
 
 @app.middleware("http")
@@ -258,6 +313,131 @@ async def transcribe(request: Request) -> dict:
         model=SPEECH_MODEL,
     )
     return {"text": text}
+
+
+@app.post(
+    "/converse", dependencies=[Depends(require_app_token), Depends(require_rate_limit)]
+)
+async def converse(
+    request: Request,
+    background_tasks: BackgroundTasks,
+    session_id: str = Query("default", max_length=128),
+) -> StreamingResponse:
+    """Stream STT, Gemini, and sentence-level TTS as NDJSON."""
+    started_at = time.perf_counter()
+    audio_bytes = await request.body()
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio payload too large")
+    try:
+        user_text = await asyncio.to_thread(transcribe_audio, audio_bytes)
+    except Exception as exc:
+        obs.error(
+            "transcribe_audio failed",
+            route="/converse",
+            api="speech_v2",
+            request_id=request.state.request_id,
+            bytes_in=len(audio_bytes),
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        return StreamingResponse(
+            iter([_ndjson_event({"type": "error", "message": "speech-to-text unavailable"})]),
+            media_type="application/x-ndjson",
+        )
+
+    stt_ms = round((time.perf_counter() - started_at) * 1000, 1)
+    user_text = user_text.strip()
+    if not user_text:
+        return StreamingResponse(
+            iter([_ndjson_event({"type": "empty"})]),
+            media_type="application/x-ndjson",
+        )
+
+    reply_parts: list[str] = []
+    completed: list[bool] = []
+    background_tasks.add_task(
+        _finalize_converse_background,
+        session_id,
+        user_text,
+        reply_parts,
+        completed,
+    )
+
+    def event_stream():
+        buffer = ""
+        sentences = 0
+        first_sentence_ms: float | None = None
+        first_audio_ms: float | None = None
+        try:
+            yield _ndjson_event({"type": "transcript", "text": user_text})
+            for chunk in stream_reply(session_id, user_text):
+                reply_parts.append(chunk)
+                buffer += chunk
+                ready, buffer = split_sentences(buffer)
+                for sentence in ready:
+                    if first_sentence_ms is None:
+                        first_sentence_ms = round(
+                            (time.perf_counter() - started_at) * 1000, 1
+                        )
+                    audio = synthesize_speech(sentence)
+                    if first_audio_ms is None:
+                        first_audio_ms = round(
+                            (time.perf_counter() - started_at) * 1000, 1
+                        )
+                    sentences += 1
+                    yield _ndjson_event(
+                        {
+                            "type": "audio",
+                            "data": base64.b64encode(audio).decode("ascii"),
+                            "text": sentence,
+                        }
+                    )
+            if buffer.strip():
+                sentence = buffer.strip()
+                if first_sentence_ms is None:
+                    first_sentence_ms = round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                audio = synthesize_speech(sentence)
+                if first_audio_ms is None:
+                    first_audio_ms = round(
+                        (time.perf_counter() - started_at) * 1000, 1
+                    )
+                sentences += 1
+                yield _ndjson_event(
+                    {
+                        "type": "audio",
+                        "data": base64.b64encode(audio).decode("ascii"),
+                        "text": sentence,
+                    }
+                )
+            reply = "".join(reply_parts)
+            completed.append(True)
+            yield _ndjson_event({"type": "done", "reply": reply})
+            obs.info(
+                "converse request completed",
+                route="/converse",
+                request_id=request.state.request_id,
+                session_id=session_id,
+                stt_ms=stt_ms,
+                first_sentence_ms=first_sentence_ms,
+                first_audio_ms=first_audio_ms,
+                total_ms=round((time.perf_counter() - started_at) * 1000, 1),
+                sentences=sentences,
+            )
+        except Exception as exc:
+            obs.error(
+                "converse stream failed",
+                route="/converse",
+                api="gemini_or_texttospeech",
+                request_id=request.state.request_id,
+                session_id=session_id,
+                detail=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            yield _ndjson_event({"type": "error", "message": "converse unavailable"})
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.post("/autonomous-review", dependencies=[Depends(require_app_token)])

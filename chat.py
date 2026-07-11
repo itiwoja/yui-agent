@@ -217,3 +217,83 @@ def chat_turn(
     )
 
     return result, open_tasks
+
+
+def stream_reply(
+    session_id: str,
+    user_text: str,
+    open_tasks_fetcher=find_open_tasks,
+):
+    """Yield Gemini reply text as it arrives, without waiting for JSON output."""
+    with ThreadPoolExecutor(max_workers=3) as executor:
+        history_future = executor.submit(get_history, session_id)
+        calendar_future = executor.submit(get_today_events)
+        open_tasks_future = executor.submit(open_tasks_fetcher)
+        history = history_future.result()
+        try:
+            today_events = calendar_future.result()
+        except Exception as exc:
+            obs.warning(
+                "failed to get today's events",
+                api="calendar",
+                session_id=session_id,
+                detail=str(exc),
+                exc_type=type(exc).__name__,
+            )
+            today_events = []
+        open_tasks = open_tasks_future.result()
+
+    known_titles = [task["title"] for task in open_tasks if task.get("title")]
+    contents = [
+        types.Content(role=msg["role"], parts=[types.Part(text=msg["text"])])
+        for msg in history
+    ]
+    titles_block = "\n".join(f"- {title}" for title in known_titles) or "(なし)"
+    events_block = (
+        "\n".join(
+            f"- {event['summary']}: {event['start']} - {event['end']}"
+            for event in today_events
+        )
+        or "(予定なし)"
+    )
+    contents.append(
+        types.Content(
+            role="user",
+            parts=[
+                types.Part(
+                    text=(
+                        "<external_data>\n"
+                        f"既存の未完了タスク:\n{titles_block}\n\n"
+                        f"今日の予定:\n{events_block}\n"
+                        "</external_data>\n\n"
+                        f"ユーザー:\n{user_text}"
+                    )
+                )
+            ],
+        )
+    )
+    # CHAT_SYSTEM_INSTRUCTION は JSON 構造化出力（tasks/reply フィールド）前提の
+    # 記述を含むが、この呼び出しはスキーマなしのテキスト生成のため、
+    # フィールド構造を書かないよう末尾で明示的に上書きする。
+    stream_only_instruction = """
+この会話では、読み上げ用のプレーンテキストの返答本文だけを出力してください。
+JSONやtasks・replyといったフィールド名・構造は一切書かないでください。
+タスクの記録・完了処理は別システムが行うため、あなたは会話の返答だけに集中してください。"""
+    response = _client().models.generate_content_stream(
+        model=MODEL,
+        contents=contents,
+        config=types.GenerateContentConfig(
+            system_instruction=(
+                CHAT_SYSTEM_INSTRUCTION
+                + CALENDAR_INSTRUCTION
+                + EXTERNAL_DATA_INSTRUCTION
+                + stream_only_instruction
+            ),
+            temperature=0.4,
+            thinking_config=types.ThinkingConfig(thinking_budget=_thinking_budget()),
+        ),
+    )
+    for chunk in response:
+        text = getattr(chunk, "text", None)
+        if text:
+            yield text

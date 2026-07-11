@@ -40,6 +40,7 @@ Google Tasks のみ、アカウント所有者本人が一度だけ許可した 
 | GET | `/health` | ヘルスチェック |
 | POST | `/process` | 単発メモからタスク抽出（一発抽出） |
 | POST | `/chat` | 複数ターンの対話。会話しながらタスク抽出も継続 |
+| POST | `/converse` | 音声入力から文字起こし・会話・文単位音声を NDJSON で統合ストリーミング |
 | POST | `/tts` | Chirp3-HD による音声合成 |
 | POST | `/transcribe` | 音声を文字起こしし、対話処理へ渡す |
 | POST | `/autonomous-review` | 放置タスクの優先度見直し＋裏どり調査（Cloud Scheduler が30分毎に呼ぶ） |

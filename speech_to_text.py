@@ -14,9 +14,11 @@ from google.cloud import speech_v2
 from google.cloud.speech_v2.types import cloud_speech
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
-# chirp_2 は global では提供されておらず、リージョン限定（東京から近い asia-southeast1 を既定にする）。
-LOCATION = os.environ.get("GOOGLE_CLOUD_SPEECH_LOCATION", "asia-southeast1")
-MODEL = "chirp_2"
+# chirp_2 は global では提供されておらず、リージョン限定。実コールで
+# asia-northeast1（東京）での動作を確認済みのため、RTT最小の東京を既定にする。
+# （chirp_3 は本プロジェクト/ja-JP では 403 のため使用しない）
+LOCATION = os.environ.get("GOOGLE_CLOUD_SPEECH_LOCATION", "asia-northeast1")
+MODEL = os.environ.get("YUI_SPEECH_MODEL", "chirp_2")
 
 _client = None
 
