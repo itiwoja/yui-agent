@@ -80,7 +80,7 @@
 - GitHub Actions のタブ: **push → check（依存解決+構文検証）→ Cloud Run デプロイ** のパイプライン
 - Cloud Run のリビジョン履歴（自動デプロイの証跡）
 - アーキテクチャ一言まとめ:
-  - Cloud Run + Vertex AI (Gemini 2.5 Flash) + Speech-to-Text + TTS (Chirp3-HD) + Firestore + Cloud Scheduler + Secret Manager + WIF キーレスCI/CD
+  - Cloud Run + Vertex AI (Gemini 3.5 Flash) + Speech-to-Text + TTS (Chirp3-HD) + Firestore + Cloud Scheduler + Secret Manager + Cloud Trace + WIF キーレスCI/CD
 
 ## 想定問答
 

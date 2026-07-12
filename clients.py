@@ -7,7 +7,9 @@ from google.cloud import firestore
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
 LOCATION = os.environ.get("GOOGLE_CLOUD_LOCATION", "asia-northeast1")
-DEFAULT_MODEL = "gemini-2.5-flash"
+# 東京リージョンで実測検証済み（初トークン~450ms・構造化出力・thinking無効化OK）。
+# 問題があれば環境変数でデプロイなしに旧モデルへ戻せる。
+DEFAULT_MODEL = os.environ.get("YUI_GEMINI_MODEL", "gemini-3.5-flash")
 
 _gemini_client: genai.Client | None = None
 _firestore_client: firestore.Client | None = None
