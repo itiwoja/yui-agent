@@ -60,6 +60,23 @@ def test_find_matching_task_returns_none_when_no_title_matches():
     assert _find_matching_task(service, "list-1", "会議資料作成") is None
 
 
+def test_find_matching_task_refreshes_a_stale_cache_once_when_it_misses():
+    service = FakeService([])
+    tasks_client._task_cache.clear()
+
+    assert _find_matching_task(service, "list-1", "Fresh task") is None
+    service.fake_tasks.items.append({"id": "task-2", "title": "Fresh task"})
+
+    assert _find_matching_task(service, "list-1", "Fresh task") == {
+        "id": "task-2",
+        "title": "Fresh task",
+    }
+    assert service.fake_tasks.list_calls == [
+        {"tasklist": "list-1", "showCompleted": False},
+        {"tasklist": "list-1", "showCompleted": False},
+    ]
+
+
 class FakeMutation:
     def __init__(self, response):
         self.response = response
@@ -96,6 +113,44 @@ def _configure_upsert(monkeypatch, service):
     monkeypatch.setattr(
         tasks_client, "_get_or_create_tasklist_id", lambda _service: "list-1"
     )
+
+
+def test_complete_google_task_refreshes_a_missed_fresh_cache(monkeypatch):
+    service = FakeUpsertService([])
+    tasks_client._task_cache.clear()
+    _configure_upsert(monkeypatch, service)
+
+    tasks_client._cached_tasks(service, "list-1")
+    service.fake_tasks.items.append({"id": "task-1", "title": "Fresh task"})
+
+    assert tasks_client.complete_google_task("Fresh task") == "updated-task"
+    assert service.fake_tasks.list_calls == [
+        {"tasklist": "list-1", "showCompleted": False},
+        {"tasklist": "list-1", "showCompleted": False},
+    ]
+    assert service.fake_tasks.patch_calls[-1]["body"] == {"status": "completed"}
+
+
+@pytest.mark.parametrize("operation", ["complete", "delete"])
+def test_google_task_mutations_warn_when_a_task_is_missing(monkeypatch, operation):
+    warnings = []
+    monkeypatch.setattr(tasks_client, "_service", lambda: object())
+    monkeypatch.setattr(
+        tasks_client, "_get_or_create_tasklist_id", lambda _service: "list-1"
+    )
+    monkeypatch.setattr(tasks_client, "_find_matching_task", lambda *_args: None)
+    monkeypatch.setattr(
+        tasks_client.obs,
+        "warning",
+        lambda *args, **kwargs: warnings.append((args, kwargs)),
+    )
+
+    result = getattr(tasks_client, f"{operation}_google_task")("Missing task")
+
+    assert result is None
+    assert warnings == [
+        (("google task not found",), {"op": operation, "title": "Missing task"})
+    ]
 
 
 def test_upsert_task_patches_matching_task_without_inserting(monkeypatch):

@@ -16,6 +16,7 @@ from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Req
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
 from google.api_core.exceptions import AlreadyExists
+from google.cloud import firestore
 from pydantic import UUID4, BaseModel, Field
 
 from agent_loop import answer_question, list_tasks, run_agent_loop
@@ -52,6 +53,7 @@ setup_tracing(app)
 APP_VERSION = "0.7.0"
 CONFIDENCE_THRESHOLD = float(os.environ.get("YUI_CONFIDENCE_THRESHOLD", "0.6"))
 MAX_AUDIO_BYTES = 10 * 1024 * 1024
+DEFAULT_FINALIZE_STALE_SEC = 120.0
 
 
 def _upsert_task_background(title: str, priority: int, reason: str) -> None:
@@ -137,6 +139,8 @@ def _enqueue_or_finalize_turn_background(
     try:
         finalize_turn(session_id, user_text, reply, turn_id)
     except Exception as exc:
+        # There is no retry mechanism for this local fallback; its claim remains
+        # processing so a later durable delivery can reclaim it after staleness.
         obs.error(
             "converse local finalization failed",
             route="/converse",
@@ -147,13 +151,56 @@ def _enqueue_or_finalize_turn_background(
         )
 
 
-def _claim_finalization(turn_id: str) -> bool:
-    """Atomically claim a turn so a Cloud Tasks retry cannot repeat its effects."""
+def _finalization_document(turn_id: str):
+    return firestore_client().collection("finalized_turns").document(turn_id)
+
+
+def _finalize_stale_sec() -> float:
     try:
-        firestore_client().collection("finalized_turns").document(turn_id).create(
-            {"created_at": time.time()}
+        return max(0.0, float(os.environ.get("YUI_FINALIZE_STALE_SEC", "120")))
+    except ValueError:
+        return DEFAULT_FINALIZE_STALE_SEC
+
+
+def _is_stale_finalization_claim(claimed_at) -> bool:
+    if claimed_at is None:
+        return False
+    if isinstance(claimed_at, (int, float)):
+        claimed_at_seconds = claimed_at
+    else:
+        try:
+            claimed_at_seconds = claimed_at.timestamp()
+        except (AttributeError, OSError, ValueError):
+            return False
+    return time.time() - claimed_at_seconds > _finalize_stale_sec()
+
+
+def _claim_finalization(session_id: str, turn_id: str) -> bool:
+    """Atomically claim a turn so a Cloud Tasks retry cannot repeat its effects."""
+    document = _finalization_document(turn_id)
+    try:
+        document.create(
+            {
+                "session_id": session_id,
+                "status": "processing",
+                "claimed_at": firestore.SERVER_TIMESTAMP,
+            }
         )
     except AlreadyExists:
+        claim = document.get().to_dict() or {}
+        if claim.get("status") == "done":
+            obs.info("finalize turn deduped", turn_id=turn_id)
+            return False
+        if claim.get("status") == "processing" and _is_stale_finalization_claim(
+            claim.get("claimed_at")
+        ):
+            document.update(
+                {"status": "processing", "claimed_at": firestore.SERVER_TIMESTAMP}
+            )
+            return True
+        if claim.get("status") == "processing":
+            obs.info("finalize turn in progress", turn_id=turn_id)
+            return False
         obs.info("finalize turn deduped", turn_id=turn_id)
         return False
     return True
@@ -163,9 +210,9 @@ def finalize_turn(
     session_id: str, user_text: str, reply: str, turn_id: str | None = None
 ) -> None:
     """Persist a completed conversation turn and apply its task actions."""
-    if turn_id and not _claim_finalization(turn_id):
+    if turn_id and not _claim_finalization(session_id, turn_id):
         return
-    append_chat_history(session_id, user_text, reply)
+    append_chat_history(session_id, user_text, reply, raise_on_failure=True)
     try:
         known_titles = get_recent_titles()
         pending_questions = find_pending_questions()
@@ -237,6 +284,11 @@ def finalize_turn(
             session_id=session_id,
             detail=str(exc),
             exc_type=type(exc).__name__,
+        )
+        raise
+    if turn_id:
+        _finalization_document(turn_id).update(
+            {"status": "done", "finished_at": firestore.SERVER_TIMESTAMP}
         )
 
 
@@ -735,7 +787,16 @@ async def converse(
         finally:
             stop_producer.set()
             if producer.is_alive():
-                producer.join()
+                producer.join(timeout=5)
+                if producer.is_alive():
+                    # The producer is a daemon thread, so a slow Gemini stream
+                    # cannot keep this process alive after the response ends.
+                    obs.warning(
+                        "gemini producer thread did not stop in time",
+                        route="/converse",
+                        request_id=request.state.request_id,
+                        session_id=session_id,
+                    )
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 

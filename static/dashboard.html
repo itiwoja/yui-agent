@@ -335,12 +335,13 @@ function card(task, extraClass) {
     completeBtn.textContent = '完了';
     completeBtn.setAttribute('aria-label', `「${task.title}」を完了にする`);
     completeBtn.addEventListener('click', async () => {
+      const section = div.closest('section');
       completeBtn.disabled = true;
       try {
         const res = await apiFetch(`/tasks/${task.id}/complete`, { method: 'POST' });
         if (!res.ok) throw Object.assign(new Error(`/tasks/${task.id}/complete ${res.status}`), { status: res.status });
         announce(`「${task.title}」を完了にしました`);
-        if (await load({ force: true })) focusSectionHeading(div.closest('section'));
+        if (await load({ force: true })) focusSectionHeading(section);
       } catch (err) {
         completeBtn.disabled = false;
         showError(err);
@@ -354,12 +355,13 @@ function card(task, extraClass) {
     dismissBtn.textContent = '取消';
     dismissBtn.setAttribute('aria-label', `「${task.title}」を取り消す`);
     dismissBtn.addEventListener('click', async () => {
+      const section = div.closest('section');
       dismissBtn.disabled = true;
       try {
         const res = await apiFetch(`/tasks/${task.id}`, { method: 'DELETE' });
         if (!res.ok) throw Object.assign(new Error(`/tasks/${task.id} ${res.status}`), { status: res.status });
         announce(`「${task.title}」を取り消しました`);
-        if (await load({ force: true })) focusSectionHeading(div.closest('section'));
+        if (await load({ force: true })) focusSectionHeading(section);
       } catch (err) {
         dismissBtn.disabled = false;
         showError(err);
@@ -394,6 +396,7 @@ function card(task, extraClass) {
         });
         if (!res.ok) throw Object.assign(new Error(`/tasks/${task.id}/answer ${res.status}`), { status: res.status });
         announce('答えを送信しました');
+        input.value = '';
         await load({ force: true });
       } catch (err) {
         btn.disabled = false;

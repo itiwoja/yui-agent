@@ -2,7 +2,7 @@
 import os
 import time
 from collections.abc import Callable, Iterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError
 from datetime import datetime, timedelta, timezone
 from typing import TypedDict
 
@@ -21,9 +21,12 @@ MODEL = DEFAULT_MODEL
 CONVERSATIONS_COLLECTION = "conversations"
 DEFAULT_THINKING_BUDGET = 512
 DEFAULT_HISTORY_LIMIT = 12
+DEFAULT_CONTEXT_FETCH_TIMEOUT_SEC = 10.0
 # The executor is intentionally process-lifetime: request-scoped executors add
 # thread creation latency, while Python shuts down this shared pool at exit.
-_context_executor = ThreadPoolExecutor(max_workers=4)
+# At most four context futures are submitted per request; eight workers preserve
+# capacity for two concurrent requests without queuing all of one request's work.
+_context_executor = ThreadPoolExecutor(max_workers=8)
 
 
 class ContextBundle(TypedDict):
@@ -137,7 +140,9 @@ def get_history(session_id: str, limit: int = HISTORY_LIMIT) -> list[dict]:
     return [doc.to_dict() for doc in docs]
 
 
-def append_chat_history(session_id: str, user_text: str, reply: str) -> None:
+def append_chat_history(
+    session_id: str, user_text: str, reply: str, raise_on_failure: bool = False
+) -> None:
     """会話の user/model メッセージを一つの Firestore batch で保存する。"""
     try:
         messages = _history_ref(session_id)
@@ -161,6 +166,30 @@ def append_chat_history(session_id: str, user_text: str, reply: str) -> None:
             detail=str(exc),
             exc_type=type(exc).__name__,
         )
+        if raise_on_failure:
+            raise
+
+
+def _context_fetch_timeout_sec() -> float:
+    try:
+        return max(
+            0.0,
+            float(
+                os.environ.get(
+                    "YUI_CONTEXT_FETCH_TIMEOUT_SEC", DEFAULT_CONTEXT_FETCH_TIMEOUT_SEC
+                )
+            ),
+        )
+    except ValueError:
+        return DEFAULT_CONTEXT_FETCH_TIMEOUT_SEC
+
+
+def _context_future_result(future, field: str, session_id: str, default):
+    try:
+        return future.result(timeout=_context_fetch_timeout_sec())
+    except TimeoutError:
+        obs.warning("context fetch timed out", field=field, session_id=session_id)
+        return default
 
 
 def _pending_questions_block(pending_questions: list[dict]) -> str:
@@ -180,9 +209,11 @@ def prefetch_context(session_id: str) -> ContextBundle:
     open_tasks_future = _context_executor.submit(find_open_tasks)
     pending_questions_future = _context_executor.submit(find_pending_questions)
 
-    history = history_future.result()
+    history = _context_future_result(history_future, "history", session_id, [])
     try:
-        today_events = calendar_future.result()
+        today_events = _context_future_result(
+            calendar_future, "today_events", session_id, []
+        )
     except Exception as exc:
         obs.warning(
             "failed to get today's events",
@@ -192,8 +223,10 @@ def prefetch_context(session_id: str) -> ContextBundle:
             exc_type=type(exc).__name__,
         )
         today_events = []
-    open_tasks = open_tasks_future.result()
-    pending_questions = pending_questions_future.result()
+    open_tasks = _context_future_result(open_tasks_future, "open_tasks", session_id, [])
+    pending_questions = _context_future_result(
+        pending_questions_future, "pending_questions", session_id, []
+    )
 
     return {
         "history": history,
@@ -216,9 +249,11 @@ def chat_turn(
     calendar_future = _context_executor.submit(get_today_events)
     open_tasks_future = _context_executor.submit(open_tasks_fetcher)
     pending_questions_future = _context_executor.submit(pending_questions_fetcher)
-    history = history_future.result()
+    history = _context_future_result(history_future, "history", session_id, [])
     try:
-        today_events = calendar_future.result()
+        today_events = _context_future_result(
+            calendar_future, "today_events", session_id, []
+        )
     except Exception as exc:
         obs.warning(
             "failed to get today's events",
@@ -228,8 +263,10 @@ def chat_turn(
             exc_type=type(exc).__name__,
         )
         today_events = []
-    open_tasks = open_tasks_future.result()
-    pending_questions = pending_questions_future.result()
+    open_tasks = _context_future_result(open_tasks_future, "open_tasks", session_id, [])
+    pending_questions = _context_future_result(
+        pending_questions_future, "pending_questions", session_id, []
+    )
     history_ms = round((time.perf_counter() - history_started_at) * 1000, 1)
     calendar_ms = round((time.perf_counter() - calendar_started_at) * 1000, 1)
     open_tasks_ms = round((time.perf_counter() - open_tasks_started_at) * 1000, 1)

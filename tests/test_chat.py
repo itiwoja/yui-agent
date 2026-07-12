@@ -145,6 +145,43 @@ def test_prefetch_context_returns_all_reply_context(monkeypatch):
     }
 
 
+def test_prefetch_context_degrades_a_timed_out_field(monkeypatch):
+    warnings = []
+
+    class Future:
+        def __init__(self, value):
+            self.value = value
+
+        def result(self, timeout):
+            assert timeout == 10.0
+            if isinstance(self.value, BaseException):
+                raise self.value
+            return self.value
+
+    class Executor:
+        def submit(self, function, *_args):
+            values = {
+                chat.get_history: [],
+                chat.get_today_events: TimeoutError(),
+                chat.find_open_tasks: [{"title": "Submit report"}],
+                chat.find_pending_questions: [],
+            }
+            return Future(values[function])
+
+    monkeypatch.setattr(chat, "_context_executor", Executor())
+    monkeypatch.setattr(
+        chat.obs, "warning", lambda *args, **kwargs: warnings.append((args, kwargs))
+    )
+
+    context = chat.prefetch_context("session")
+
+    assert context["today_events"] == []
+    assert context["open_tasks"] == [{"title": "Submit report"}]
+    assert warnings == [
+        (("context fetch timed out",), {"field": "today_events", "session_id": "session"})
+    ]
+
+
 def test_stream_reply_uses_supplied_context_without_refetching(monkeypatch):
     captured = {}
 

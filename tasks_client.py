@@ -8,6 +8,7 @@ from google.oauth2.credentials import Credentials
 from googleapiclient.discovery import build
 
 from matching import normalize_title, titles_match
+import obs
 
 PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
 TASKLIST_TITLE = "Yui"
@@ -84,25 +85,35 @@ def _get_or_create_tasklist_id(service) -> str:
     return _tasklist_id
 
 
-def _cached_tasks(service, tasklist_id: str) -> dict[str, dict]:
+def _cached_tasks(
+    service, tasklist_id: str, *, force_refresh: bool = False
+) -> dict[str, dict]:
     """Return the current tasklist index, fetching it once per TTL window."""
     key = (id(service), tasklist_id)
     now = time.monotonic()
     with _task_cache_lock:
         cached = _task_cache.get(key)
-        if cached and cached[0] > now:
+        if not force_refresh and cached and cached[0] > now:
             return cached[1]
 
-        result = service.tasks().list(
-            tasklist=tasklist_id, showCompleted=False
-        ).execute()
-        indexed: dict[str, dict] = {}
-        for task in result.get("items", []):
-            normalized = normalize_title(task.get("title", ""))
-            if normalized:
-                indexed.setdefault(normalized, task)
+    # A racing cache miss may fetch twice; that is acceptable because network I/O
+    # must stay outside the cache lock so unrelated callers are not blocked.
+    result = service.tasks().list(tasklist=tasklist_id, showCompleted=False).execute()
+    indexed: dict[str, dict] = {}
+    for task in result.get("items", []):
+        normalized = normalize_title(task.get("title", ""))
+        if normalized:
+            indexed.setdefault(normalized, task)
+    with _task_cache_lock:
         _task_cache[key] = (now + _tasks_cache_ttl(), indexed)
-        return indexed
+    return indexed
+
+
+def _has_fresh_task_cache(service, tasklist_id: str) -> bool:
+    key = (id(service), tasklist_id)
+    with _task_cache_lock:
+        cached = _task_cache.get(key)
+        return bool(cached and cached[0] > time.monotonic())
 
 
 def _update_cached_task(service, tasklist_id: str, task: dict) -> None:
@@ -133,7 +144,13 @@ def _remove_cached_task(service, tasklist_id: str, task_id: str) -> None:
 
 def _find_matching_task(service, tasklist_id: str, title: str) -> dict | None:
     """未完了タスクを一度だけ取得し、タイトル一致するものを返す。"""
+    cache_was_fresh = _has_fresh_task_cache(service, tasklist_id)
     for task in _cached_tasks(service, tasklist_id).values():
+        if titles_match(task.get("title", ""), title):
+            return task
+    if not cache_was_fresh:
+        return None
+    for task in _cached_tasks(service, tasklist_id, force_refresh=True).values():
         if titles_match(task.get("title", ""), title):
             return task
     return None
@@ -183,6 +200,7 @@ def complete_google_task(title: str) -> str | None:
         ).execute()
         _remove_cached_task(service, tasklist_id, existing["id"])
         return completed["id"]
+    obs.warning("google task not found", op="complete", title=title)
     return None
 
 
@@ -195,4 +213,5 @@ def delete_google_task(title: str) -> str | None:
         service.tasks().delete(tasklist=tasklist_id, task=existing["id"]).execute()
         _remove_cached_task(service, tasklist_id, existing["id"])
         return existing["id"]
+    obs.warning("google task not found", op="delete", title=title)
     return None

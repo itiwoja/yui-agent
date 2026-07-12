@@ -228,7 +228,7 @@ def test_converse_rejects_audio_larger_than_maximum(monkeypatch):
 
 def test_finalize_converse_applies_matching_pending_question_answer(monkeypatch):
     answered = []
-    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "get_recent_titles", lambda: [])
     monkeypatch.setattr(
         main,
@@ -269,7 +269,7 @@ def test_finalize_converse_applies_matching_pending_question_answer(monkeypatch)
 def test_finalize_converse_continues_after_question_answer_failure(monkeypatch):
     answered = []
     errors = []
-    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "get_recent_titles", lambda: [])
     monkeypatch.setattr(
         main,
@@ -383,11 +383,19 @@ def test_finalize_turn_deduplicates_an_existing_turn(monkeypatch):
 
     class Document:
         claimed = False
+        status = None
 
-        def create(self, _data):
+        def create(self, data):
             if self.claimed:
                 raise AlreadyExists("already finalized")
             self.claimed = True
+            self.status = data["status"]
+
+        def get(self):
+            return SimpleNamespace(to_dict=lambda: {"status": self.status})
+
+        def update(self, data):
+            self.status = data["status"]
 
     document = Document()
 
@@ -401,7 +409,9 @@ def test_finalize_turn_deduplicates_an_existing_turn(monkeypatch):
             return Collection()
 
     monkeypatch.setattr(main, "firestore_client", lambda: Database())
-    monkeypatch.setattr(main, "append_chat_history", lambda *args: finalized.append(args))
+    monkeypatch.setattr(
+        main, "append_chat_history", lambda *args, **_kwargs: finalized.append(args)
+    )
     monkeypatch.setattr(main, "get_recent_titles", lambda: [])
     monkeypatch.setattr(main, "find_pending_questions", lambda: [])
     monkeypatch.setattr(main, "extract_dialog_actions", lambda *_args: ([], [], []))
@@ -411,6 +421,58 @@ def test_finalize_turn_deduplicates_an_existing_turn(monkeypatch):
     main.finalize_turn("session", "hello", "reply", turn_id="turn-123")
 
     assert finalized == [("session", "hello", "reply")]
+
+
+def test_finalize_turn_reclaims_a_stale_failed_history_write(monkeypatch):
+    from google.api_core.exceptions import AlreadyExists
+
+    class Document:
+        def __init__(self):
+            self.data = None
+            self.updates = []
+
+        def create(self, data):
+            if self.data is not None:
+                raise AlreadyExists("already claimed")
+            self.data = dict(data)
+
+        def get(self):
+            return SimpleNamespace(to_dict=lambda: dict(self.data))
+
+        def update(self, data):
+            self.data.update(data)
+            self.updates.append(data)
+
+    document = Document()
+
+    class Database:
+        def collection(self, name):
+            assert name == "finalized_turns"
+            return SimpleNamespace(document=lambda _turn_id: document)
+
+    writes = []
+    monkeypatch.setenv("YUI_FINALIZE_STALE_SEC", "0")
+    monkeypatch.setattr(main, "firestore_client", lambda: Database())
+    monkeypatch.setattr(main.firestore, "SERVER_TIMESTAMP", 0)
+
+    def append_history(*_args, **_kwargs):
+        writes.append(True)
+        if len(writes) == 1:
+            raise RuntimeError("firestore unavailable")
+
+    monkeypatch.setattr(main, "append_chat_history", append_history)
+    monkeypatch.setattr(main, "get_recent_titles", lambda: [])
+    monkeypatch.setattr(main, "find_pending_questions", lambda: [])
+    monkeypatch.setattr(main, "extract_dialog_actions", lambda *_args: ([], [], []))
+    monkeypatch.setattr(main, "find_open_tasks", lambda: [])
+
+    with pytest.raises(RuntimeError, match="firestore unavailable"):
+        main.finalize_turn("session", "hello", "reply", turn_id="turn-123")
+    main.finalize_turn("session", "hello", "reply", turn_id="turn-123")
+
+    assert writes == [True, True]
+    assert document.data["status"] == "done"
+    assert [update["status"] for update in document.updates] == ["processing", "done"]
 
 
 def test_converse_does_not_finalize_an_empty_reply(monkeypatch):
@@ -561,7 +623,7 @@ def test_finalize_turn_continues_after_one_task_persistence_failure(monkeypatch)
     errors = []
     first = SimpleNamespace(title="First", priority=2, reason="test")
     second = SimpleNamespace(title="Second", priority=2, reason="test")
-    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "get_recent_titles", lambda: [])
     monkeypatch.setattr(main, "find_pending_questions", lambda: [])
     monkeypatch.setattr(main, "find_open_tasks", lambda: [])
@@ -590,7 +652,7 @@ def test_finalize_turn_fetches_open_tasks_once_and_reuses_them(monkeypatch):
     fetched = []
     received = []
     extracted = [SimpleNamespace(title="New task", priority=2, reason="test")]
-    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(main, "get_recent_titles", lambda: [])
     monkeypatch.setattr(main, "find_pending_questions", lambda: [])
     monkeypatch.setattr(
