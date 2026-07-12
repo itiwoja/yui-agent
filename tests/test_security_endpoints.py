@@ -3,6 +3,8 @@ import os
 
 import pytest
 
+import rate_limit
+
 os.environ["YUI_APP_TOKEN"] = "test-token"
 
 pytest.importorskip("httpx")
@@ -50,6 +52,32 @@ def test_transcribe_rejects_payload_larger_than_ten_megabytes():
     resp = client.post(
         "/transcribe",
         content=b"x" * (10 * 1024 * 1024 + 1),
-        headers=HEADERS,
+        headers={**HEADERS, "Content-Type": "audio/wav"},
     )
     assert resp.status_code == 413
+
+
+def test_audio_endpoints_reject_non_audio_content_types():
+    rate_limit.clear_rate_limits()
+
+    transcribe = client.post(
+        "/transcribe",
+        content=b"not audio",
+        headers={**HEADERS, "Content-Type": "text/plain"},
+    )
+    converse = client.post(
+        "/converse",
+        content=b"not audio",
+        headers={**HEADERS, "Content-Type": "text/plain"},
+    )
+
+    assert transcribe.status_code == 415
+    assert converse.status_code == 415
+
+
+def test_security_headers_are_added_to_responses():
+    response = client.get("/health")
+
+    assert response.headers["x-frame-options"] == "DENY"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["referrer-policy"] == "strict-origin-when-cross-origin"

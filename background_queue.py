@@ -24,7 +24,11 @@ def _client() -> tasks_v2.CloudTasksClient:
 
 
 def enqueue_finalize_turn(
-    session_id: str, user_text: str, reply: str, request_id: str | None = None
+    session_id: str,
+    user_text: str,
+    reply: str,
+    turn_id: str | None = None,
+    request_id: str | None = None,
 ) -> bool:
     """Enqueue finalization of a streamed conversation, if Cloud Tasks is enabled."""
     service_url = os.environ.get("YUI_SERVICE_URL", "").rstrip("/")
@@ -55,6 +59,7 @@ def enqueue_finalize_turn(
                         "session_id": session_id,
                         "user_text": user_text,
                         "reply": reply,
+                        **({"turn_id": turn_id} if turn_id else {}),
                     }
                 ).encode("utf-8"),
             )

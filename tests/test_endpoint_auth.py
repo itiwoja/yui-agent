@@ -7,6 +7,8 @@ import os
 
 import pytest
 
+import rate_limit
+
 os.environ["YUI_APP_TOKEN"] = "test-token"
 
 pytest.importorskip("httpx")
@@ -59,3 +61,23 @@ def test_tasks_accepts_valid_header_token(monkeypatch):
     response = client.get("/tasks", headers={"X-Yui-Token": "test-token"})
 
     assert response.status_code != 401
+
+
+def test_internal_finalize_turn_is_rate_limited(monkeypatch):
+    rate_limit.clear_rate_limits()
+    monkeypatch.setenv("YUI_RATE_LIMIT", "1")
+    monkeypatch.setattr("main.finalize_turn", lambda *_args: None)
+
+    first = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "session", "user_text": "hello", "reply": "reply"},
+        headers={"X-Yui-Token": "test-token"},
+    )
+    second = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "session", "user_text": "hello", "reply": "reply"},
+        headers={"X-Yui-Token": "test-token"},
+    )
+
+    assert first.status_code == 200
+    assert second.status_code == 429

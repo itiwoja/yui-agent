@@ -1,5 +1,6 @@
 import json
 import os
+import uuid
 from types import SimpleNamespace
 
 import pytest
@@ -16,6 +17,7 @@ except Exception as exc:
 
 
 HEADERS = {"X-Yui-Token": "test-token"}
+HEADERS_AUDIO = {**HEADERS, "Content-Type": "audio/wav"}
 
 
 def test_converse_streams_transcript_audio_and_done(monkeypatch):
@@ -32,7 +34,7 @@ def test_converse_streams_transcript_audio_and_done(monkeypatch):
     monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args, **_kwargs: True)
 
     client = TestClient(main.app)
-    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
+    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO)
     events = [json.loads(line) for line in response.text.splitlines()]
 
     assert response.headers["content-type"].startswith("application/x-ndjson")
@@ -61,7 +63,7 @@ def test_converse_passes_prefetched_context_to_stream_reply(monkeypatch):
     monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args, **_kwargs: True)
 
     client = TestClient(main.app)
-    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
+    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO)
 
     assert response.status_code == 200
     assert received == [context]
@@ -84,7 +86,7 @@ def test_converse_falls_back_to_mp3_when_streaming_tts_fails(monkeypatch):
     monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args, **_kwargs: True)
 
     client = TestClient(main.app)
-    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
+    response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO)
     events = [json.loads(line) for line in response.text.splitlines()]
 
     assert [event["type"] for event in events] == ["transcript", "audio", "done"]
@@ -100,7 +102,7 @@ def test_converse_emits_empty_for_empty_transcript(monkeypatch):
     monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "  ")
 
     client = TestClient(main.app)
-    response = client.post("/converse", content=b"audio", headers=HEADERS)
+    response = client.post("/converse", content=b"audio", headers=HEADERS_AUDIO)
 
     assert [json.loads(line) for line in response.text.splitlines()] == [{"type": "empty"}]
 
@@ -200,11 +202,12 @@ def test_converse_uses_local_background_finalizer_when_enqueue_fails(monkeypatch
     monkeypatch.setattr(main, "finalize_turn", lambda *args: finalized.append(args))
 
     response = TestClient(main.app).post(
-        "/converse?session_id=session", content=b"audio", headers=HEADERS
+        "/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO
     )
 
     assert response.status_code == 200
-    assert finalized == [("session", "hello", "Hello.")]
+    assert finalized[0][:3] == ("session", "hello", "Hello.")
+    assert uuid.UUID(finalized[0][3]).version == 4
 
 
 def test_converse_does_not_run_local_finalizer_when_enqueue_succeeds(monkeypatch):
@@ -224,10 +227,71 @@ def test_converse_does_not_run_local_finalizer_when_enqueue_succeeds(monkeypatch
     )
 
     response = TestClient(main.app).post(
-        "/converse?session_id=session", content=b"audio", headers=HEADERS
+        "/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO
     )
 
     assert response.status_code == 200
+
+
+def test_converse_enqueues_a_uuid4_turn_id(monkeypatch):
+    enqueued = []
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
+    monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
+    monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello."]))
+    monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
+    monkeypatch.setattr(
+        main,
+        "enqueue_finalize_turn",
+        lambda *args, **kwargs: enqueued.append((args, kwargs)) or True,
+    )
+
+    response = TestClient(main.app).post(
+        "/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO
+    )
+
+    assert response.status_code == 200
+    assert uuid.UUID(enqueued[0][1]["turn_id"]).version == 4
+
+
+def test_finalize_turn_deduplicates_an_existing_turn(monkeypatch):
+    from google.api_core.exceptions import AlreadyExists
+
+    finalized = []
+
+    class Document:
+        claimed = False
+
+        def create(self, _data):
+            if self.claimed:
+                raise AlreadyExists("already finalized")
+            self.claimed = True
+
+    document = Document()
+
+    class Collection:
+        def document(self, _turn_id):
+            return document
+
+    class Database:
+        def collection(self, name):
+            assert name == "finalized_turns"
+            return Collection()
+
+    monkeypatch.setattr(main, "firestore_client", lambda: Database())
+    monkeypatch.setattr(main, "append_chat_history", lambda *args: finalized.append(args))
+    monkeypatch.setattr(main, "get_recent_titles", lambda: [])
+    monkeypatch.setattr(main, "find_pending_questions", lambda: [])
+    monkeypatch.setattr(main, "extract_dialog_actions", lambda *_args: ([], [], []))
+    monkeypatch.setattr(main, "find_open_tasks", lambda: [])
+
+    main.finalize_turn("session", "hello", "reply", turn_id="turn-123")
+    main.finalize_turn("session", "hello", "reply", turn_id="turn-123")
+
+    assert finalized == [("session", "hello", "reply")]
 
 
 def test_converse_does_not_finalize_an_empty_reply(monkeypatch):
@@ -248,7 +312,7 @@ def test_converse_does_not_finalize_an_empty_reply(monkeypatch):
         lambda *_args: (_ for _ in ()).throw(AssertionError("must not finalize")),
     )
 
-    response = TestClient(main.app).post("/converse", content=b"audio", headers=HEADERS)
+    response = TestClient(main.app).post("/converse", content=b"audio", headers=HEADERS_AUDIO)
 
     assert response.status_code == 200
     assert enqueued == []
@@ -312,7 +376,7 @@ def test_converse_degrades_when_context_prefetch_fails(monkeypatch):
     monkeypatch.setattr(main.obs, "error", lambda *args, **_kwargs: errors.append(args))
 
     response = TestClient(main.app).post(
-        "/converse?session_id=session", content=b"audio", headers=HEADERS
+        "/converse?session_id=session", content=b"audio", headers=HEADERS_AUDIO
     )
 
     assert response.status_code == 200

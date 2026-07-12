@@ -13,13 +13,15 @@ import uuid
 from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from google.api_core.exceptions import AlreadyExists
+from pydantic import UUID4, BaseModel, Field
 
 from agent_loop import answer_question, list_tasks, run_agent_loop
 from auth import assert_token_configured, require_app_token
 from autonomous_review import run_autonomous_review
 from background_queue import enqueue_finalize_turn
 from chat import ContextBundle, append_chat_history, chat_turn, prefetch_context, stream_reply
+from clients import firestore_client
 from confidence import filter_confident
 from dialog_actions import extract_dialog_actions
 from extraction import extract_tasks
@@ -97,8 +99,24 @@ def _record_and_upsert_task_background(
         )
 
 
-def finalize_turn(session_id: str, user_text: str, reply: str) -> None:
+def _claim_finalization(turn_id: str) -> bool:
+    """Atomically claim a turn so a Cloud Tasks retry cannot repeat its effects."""
+    try:
+        firestore_client().collection("finalized_turns").document(turn_id).create(
+            {"created_at": time.time()}
+        )
+    except AlreadyExists:
+        obs.info("finalize turn deduped", turn_id=turn_id)
+        return False
+    return True
+
+
+def finalize_turn(
+    session_id: str, user_text: str, reply: str, turn_id: str | None = None
+) -> None:
     """Persist a completed conversation turn and apply its task actions."""
+    if turn_id and not _claim_finalization(turn_id):
+        return
     append_chat_history(session_id, user_text, reply)
     try:
         known_titles = get_recent_titles()
@@ -177,6 +195,7 @@ class FinalizeTurnRequest(BaseModel):
     session_id: str = Field(max_length=128)
     user_text: str = Field(max_length=4000)
     reply: str = Field(max_length=4000)
+    turn_id: UUID4 | None = None
 
 
 def _ndjson_event(event: dict) -> str:
@@ -190,6 +209,9 @@ async def add_request_id(request: Request, call_next):
     request.state.request_id = request_id
     response = await call_next(request)
     response.headers["x-request-id"] = request_id
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     return response
 
 
@@ -204,12 +226,23 @@ def health() -> dict:
     return {"status": "ok", "agent": "yui", "version": APP_VERSION}
 
 
-@app.post("/internal/finalize-turn", dependencies=[Depends(require_app_token)])
+@app.post(
+    "/internal/finalize-turn",
+    dependencies=[Depends(require_app_token), Depends(require_rate_limit)],
+)
 def internal_finalize_turn(request: FinalizeTurnRequest, http_request: Request) -> dict:
     """Run a durable Cloud Tasks finalization request."""
     retry_count = http_request.headers.get("x-cloudtasks-taskretrycount")
     try:
-        finalize_turn(request.session_id, request.user_text, request.reply)
+        if request.turn_id:
+            finalize_turn(
+                request.session_id,
+                request.user_text,
+                request.reply,
+                turn_id=str(request.turn_id),
+            )
+        else:
+            finalize_turn(request.session_id, request.user_text, request.reply)
     except Exception as exc:
         obs.error(
             "finalize turn failed",
@@ -367,6 +400,8 @@ def tts(request: SpeechRequest, http_request: Request) -> Response:
 )
 async def transcribe(request: Request) -> dict:
     started_at = time.perf_counter()
+    if not request.headers.get("content-type", "").lower().startswith("audio/"):
+        raise HTTPException(status_code=415, detail="audio content type required")
     audio_bytes = await request.body()
     if len(audio_bytes) > MAX_AUDIO_BYTES:
         raise HTTPException(status_code=413, detail="audio payload too large")
@@ -410,6 +445,9 @@ async def converse(
 ) -> StreamingResponse:
     """Stream STT, Gemini, and sentence-level TTS as NDJSON."""
     started_at = time.perf_counter()
+    if not request.headers.get("content-type", "").lower().startswith("audio/"):
+        raise HTTPException(status_code=415, detail="audio content type required")
+    turn_id = str(uuid.uuid4())
     audio_bytes = await request.body()
     prefetch_started_at = time.perf_counter()
     context_future = asyncio.get_running_loop().run_in_executor(
@@ -573,11 +611,14 @@ async def converse(
                     session_id,
                     user_text,
                     reply,
+                    turn_id=turn_id,
                     request_id=request.state.request_id,
                 ):
                     finalize_via = "cloud_tasks"
                 else:
-                    background_tasks.add_task(finalize_turn, session_id, user_text, reply)
+                    background_tasks.add_task(
+                        finalize_turn, session_id, user_text, reply, turn_id
+                    )
                     finalize_via = "background_fallback"
             else:
                 obs.warning(

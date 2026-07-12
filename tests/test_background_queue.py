@@ -39,7 +39,7 @@ def test_enqueue_finalize_turn_creates_authenticated_http_task(monkeypatch):
 
     assert (
         background_queue.enqueue_finalize_turn(
-            "session", "hello", "reply", request_id="request-123"
+            "session", "hello", "reply", turn_id="turn-123", request_id="request-123"
         )
         is True
     )
@@ -55,6 +55,7 @@ def test_enqueue_finalize_turn_creates_authenticated_http_task(monkeypatch):
         "session_id": "session",
         "user_text": "hello",
         "reply": "reply",
+        "turn_id": "turn-123",
     }
 
 
