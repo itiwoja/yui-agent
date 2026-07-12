@@ -4,7 +4,7 @@
 
 ## 全体の検証コマンド（Codexは各ステージ後に実行・常に緑）
 ```bash
-cd C:/Users/1kkim/projects/yui-agent
+cd <リポジトリのクローン先>/yui-agent
 uv run --with ruff ruff check .
 uv run --with-requirements requirements-dev.txt --with httpx pytest -q
 ```

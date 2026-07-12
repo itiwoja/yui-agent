@@ -7,19 +7,21 @@
     python scripts/setup_google_tasks_auth.py
 """
 import os
+import shutil
 import subprocess
 import sys
 
 from google_auth_oauthlib.flow import InstalledAppFlow
 
-PROJECT_ID = "yui-agent-2026"
+PROJECT_ID = os.environ.get("GOOGLE_CLOUD_PROJECT", "yui-agent-2026")
 SCOPES = [
     "https://www.googleapis.com/auth/tasks",
     "https://www.googleapis.com/auth/calendar.readonly",
 ]
-GCLOUD = (
-    r"C:\Users\1kkim\AppData\Local\Google\Cloud SDK\google-cloud-sdk\bin\gcloud.cmd"
-)
+# PATH から gcloud を解決する（Windows は gcloud.cmd）。見つからなければ明示エラー。
+GCLOUD = shutil.which("gcloud") or shutil.which("gcloud.cmd")
+if GCLOUD is None:
+    sys.exit("gcloud CLI が見つかりません。Google Cloud SDK をインストールして PATH に追加してください。")
 
 # Windows上のgcloudはstdoutが非コンソールの場合、システムのANSIコードページ(cp932等)に
 # フォールバックし、自身のバナー等に含まれるBOM文字でクラッシュすることがあるため明示的にUTF-8を強制する。
