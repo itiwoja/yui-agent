@@ -6,8 +6,9 @@ memory_store = pytest.importorskip("memory_store")
 
 
 class FakeDocument:
-    def __init__(self, data):
+    def __init__(self, data, doc_id="task-1"):
         self.data = data
+        self.id = doc_id
         self.updated = []
         self.reference = self
 
@@ -22,14 +23,18 @@ class FakeTaskMentions:
     def __init__(self, previous):
         self.previous = previous
         self.added = []
+        self.where_calls = []
+        self.limit_calls = []
 
-    def where(self, *_args):
+    def where(self, *args):
+        self.where_calls.append(args)
         return self
 
     def order_by(self, *_args, **_kwargs):
         return self
 
     def limit(self, _limit):
+        self.limit_calls.append(_limit)
         return self
 
     def get(self):
@@ -93,3 +98,22 @@ def test_record_and_resolve_uses_higher_incoming_priority(monkeypatch):
     assert result["mention_count"] == 5
     assert result["promoted"] is False
     assert previous.updated[0]["priority"] == 5
+
+
+def test_find_pending_questions_filters_and_limits_results(monkeypatch):
+    pending = [
+        FakeDocument(
+            {"title": "Submit report", "pending_question": "Who is the reviewer?"}
+        )
+    ]
+    task_mentions = _configure_firestore(monkeypatch, pending)
+
+    assert memory_store.find_pending_questions(limit=2) == [
+        {
+            "id": "task-1",
+            "title": "Submit report",
+            "pending_question": "Who is the reviewer?",
+        }
+    ]
+    assert task_mentions.where_calls == [("status", "==", "needs_input")]
+    assert task_mentions.limit_calls == [2]

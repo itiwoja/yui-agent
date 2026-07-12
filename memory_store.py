@@ -47,6 +47,26 @@ def find_open_tasks(limit: int = 100) -> list[dict]:
     return tasks
 
 
+def find_pending_questions(limit: int = 5) -> list[dict]:
+    """Return the most recent task questions that need a user response."""
+    docs = (
+        _client()
+        .collection(COLLECTION)
+        .where("status", "==", "needs_input")
+        .limit(limit)
+        .get()
+    )
+    return [
+        {
+            "id": doc.id,
+            "title": data.get("title", ""),
+            "pending_question": data.get("pending_question", ""),
+        }
+        for doc in docs
+        for data in [doc.to_dict()]
+    ]
+
+
 def complete_task(doc_id: str) -> dict:
     """Firestore上のタスクを完了にし、更新後の主要フィールドを返す。"""
     ref = _client().collection(COLLECTION).document(doc_id)

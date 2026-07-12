@@ -102,3 +102,86 @@ def test_converse_emits_empty_for_empty_transcript(monkeypatch):
     response = client.post("/converse", content=b"audio", headers=HEADERS)
 
     assert [json.loads(line) for line in response.text.splitlines()] == [{"type": "empty"}]
+
+
+def test_finalize_converse_applies_matching_pending_question_answer(monkeypatch):
+    answered = []
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "get_recent_titles", lambda: [])
+    monkeypatch.setattr(
+        main,
+        "find_pending_questions",
+        lambda: [
+            {
+                "id": "task-1",
+                "title": "Submit report",
+                "pending_question": "Who is the reviewer?",
+            }
+        ],
+    )
+    monkeypatch.setattr(
+        main,
+        "extract_dialog_actions",
+        lambda *_args: (
+            [],
+            [],
+            [
+                type(
+                    "Answer",
+                    (),
+                    {"task_title": "Submit report", "answer": "Maya"},
+                )()
+            ],
+        ),
+    )
+    monkeypatch.setattr(main, "find_open_tasks", lambda: [])
+    monkeypatch.setattr(
+        main, "answer_question", lambda doc_id, answer: answered.append((doc_id, answer))
+    )
+
+    main._finalize_converse_background(
+        "session", "Maya is the reviewer.", ["Thanks."], [True]
+    )
+
+    assert answered == [("task-1", "Maya")]
+
+
+def test_finalize_converse_continues_after_question_answer_failure(monkeypatch):
+    answered = []
+    errors = []
+    monkeypatch.setattr(main, "append_chat_history", lambda *_args: None)
+    monkeypatch.setattr(main, "get_recent_titles", lambda: [])
+    monkeypatch.setattr(
+        main,
+        "find_pending_questions",
+        lambda: [
+            {"id": "first", "title": "First task", "pending_question": "First?"},
+            {"id": "second", "title": "Second task", "pending_question": "Second?"},
+        ],
+    )
+    monkeypatch.setattr(
+        main,
+        "extract_dialog_actions",
+        lambda *_args: (
+            [],
+            [],
+            [
+                type("Answer", (), {"task_title": "First task", "answer": "one"})(),
+                type("Answer", (), {"task_title": "Second task", "answer": "two"})(),
+            ],
+        ),
+    )
+    monkeypatch.setattr(main, "find_open_tasks", lambda: [])
+
+    def answer(doc_id, answer):
+        if doc_id == "first":
+            raise RuntimeError("temporary failure")
+        answered.append((doc_id, answer))
+
+    monkeypatch.setattr(main, "answer_question", answer)
+    monkeypatch.setattr(main.obs, "error", lambda *args, **kwargs: errors.append(args[0]))
+
+    main._finalize_converse_background("session", "answers", ["Thanks."], [True])
+
+    assert answered == [("second", "two")]
+    assert "converse question answer failed" in errors

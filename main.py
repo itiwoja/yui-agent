@@ -28,6 +28,7 @@ from rate_limit import require_rate_limit
 from memory_store import (
     complete_task,
     delete_task,
+    find_pending_questions,
     find_open_tasks,
     get_recent_titles,
     record_and_resolve,
@@ -90,7 +91,10 @@ def _finalize_converse_background(
     append_chat_history(session_id, user_text, reply)
     try:
         known_titles = get_recent_titles()
-        extracted, completed_titles = extract_dialog_actions(user_text, known_titles)
+        pending_questions = find_pending_questions()
+        extracted, completed_titles, question_answers = extract_dialog_actions(
+            user_text, known_titles, pending_questions
+        )
         for task in filter_confident(extracted, CONFIDENCE_THRESHOLD):
             resolved = record_and_resolve(task.title, task.priority, task.reason)
             _upsert_task_background(
@@ -107,6 +111,25 @@ def _finalize_converse_background(
                     complete_task(task["id"])
                     _complete_google_task_background(task["title"])
                     matched_ids.add(task["id"])
+                    break
+
+        matched_question_ids = set()
+        for question_answer in question_answers:
+            for question in pending_questions:
+                if question["id"] in matched_question_ids:
+                    continue
+                if titles_match(question_answer.task_title, question.get("title", "")):
+                    try:
+                        answer_question(question["id"], question_answer.answer)
+                    except Exception as exc:
+                        obs.error(
+                            "converse question answer failed",
+                            route="/converse",
+                            session_id=session_id,
+                            detail=str(exc),
+                            exc_type=type(exc).__name__,
+                        )
+                    matched_question_ids.add(question["id"])
                     break
     except Exception as exc:
         obs.error(

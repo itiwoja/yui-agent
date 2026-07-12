@@ -107,12 +107,20 @@ def test_chat_turn_uses_open_tasks_fetcher_for_known_titles(monkeypatch):
     monkeypatch.setattr(chat, "call_with_retry", lambda operation: operation())
 
     result, returned_open_tasks = chat.chat_turn(
-        "session", "I completed it", open_tasks_fetcher=lambda: open_tasks
+        "session",
+        "I completed it",
+        open_tasks_fetcher=lambda: open_tasks,
+        pending_questions_fetcher=lambda: [],
     )
 
     assert result.reply == "done"
     assert returned_open_tasks == open_tasks
     assert "Submit report" in captured["contents"][-1].parts[0].text
+    assert "保留中の質問:" not in captured["contents"][-1].parts[0].text
+    assert (
+        chat.PENDING_QUESTIONS_INSTRUCTION
+        not in captured["config"].system_instruction
+    )
 
 
 def test_prefetch_context_returns_all_reply_context(monkeypatch):
@@ -125,6 +133,7 @@ def test_prefetch_context_returns_all_reply_context(monkeypatch):
         lambda: [{"summary": "Standup", "start": "09:00", "end": "09:30"}],
     )
     monkeypatch.setattr(chat, "find_open_tasks", lambda: [{"title": "Submit report"}])
+    monkeypatch.setattr(chat, "find_pending_questions", lambda: [])
 
     context = chat.prefetch_context("session")
 
@@ -132,6 +141,7 @@ def test_prefetch_context_returns_all_reply_context(monkeypatch):
         "history": [{"role": "user", "text": "hi"}],
         "today_events": [{"summary": "Standup", "start": "09:00", "end": "09:30"}],
         "open_tasks": [{"title": "Submit report"}],
+        "pending_questions": [],
     }
 
 
@@ -163,3 +173,39 @@ def test_stream_reply_uses_supplied_context_without_refetching(monkeypatch):
 
     assert result == ["done"]
     assert "Submit report" in captured["contents"][-1].parts[0].text
+
+
+def test_stream_reply_includes_pending_questions_in_context(monkeypatch):
+    captured = {}
+
+    class FakeModels:
+        def generate_content_stream(self, **kwargs):
+            captured.update(kwargs)
+            return [type("Chunk", (), {"text": "done"})()]
+
+    class FakeClient:
+        models = FakeModels()
+
+    monkeypatch.setattr(chat, "_client", lambda: FakeClient())
+
+    list(
+        chat.stream_reply(
+            "session",
+            "The reviewer is Maya.",
+            {
+                "history": [],
+                "today_events": [],
+                "open_tasks": [],
+                "pending_questions": [
+                    {
+                        "id": "task-1",
+                        "title": "Submit report",
+                        "pending_question": "Who is the reviewer?",
+                    }
+                ],
+            },
+        )
+    )
+
+    prompt = captured["contents"][-1].parts[0].text
+    assert "Submit report: Who is the reviewer?" in prompt

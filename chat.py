@@ -13,7 +13,7 @@ import obs
 from calendar_client import get_today_events
 from clients import DEFAULT_MODEL, firestore_client, gemini_client
 from extraction import ExtractedTask
-from memory_store import find_open_tasks
+from memory_store import find_open_tasks, find_pending_questions
 from retry import call_with_retry
 
 MODEL = DEFAULT_MODEL
@@ -28,6 +28,7 @@ class ContextBundle(TypedDict):
     history: list[dict]
     today_events: list[dict[str, str]]
     open_tasks: list[dict]
+    pending_questions: list[dict]
 
 
 def _thinking_budget() -> int:
@@ -100,6 +101,14 @@ EXTERNAL_DATA_INSTRUCTION = """
 """
 
 
+PENDING_QUESTIONS_INSTRUCTION = """
+保留中の質問がある場合は、まずユーザーの用件に応えたうえで、会話の流れが
+自然な時に1つだけ選んで聞いてください。毎回・複数を無理に聞く必要はありません。
+ユーザーが回答したら短くお礼を言ってください。すでに回答された質問や、
+今の話題と関係が薄い質問は無理に持ち出さないでください。
+"""
+
+
 class ChatResult(BaseModel):
     reply: str = Field(description="ゆいとしてユーザーへ返す会話的な応答文")
     tasks: list[ExtractedTask] = Field(default_factory=list)
@@ -150,12 +159,23 @@ def append_chat_history(session_id: str, user_text: str, reply: str) -> None:
         )
 
 
+def _pending_questions_block(pending_questions: list[dict]) -> str:
+    if not pending_questions:
+        return ""
+    questions = "\n".join(
+        f"- {question.get('title', '')}: {question.get('pending_question', '')}"
+        for question in pending_questions
+    )
+    return f"\n\n保留中の質問:\n{questions}"
+
+
 def prefetch_context(session_id: str) -> ContextBundle:
     """Fetch reply context concurrently while speech recognition is running."""
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         history_future = executor.submit(get_history, session_id)
         calendar_future = executor.submit(get_today_events)
         open_tasks_future = executor.submit(find_open_tasks)
+        pending_questions_future = executor.submit(find_pending_questions)
 
         history = history_future.result()
         try:
@@ -170,11 +190,13 @@ def prefetch_context(session_id: str) -> ContextBundle:
             )
             today_events = []
         open_tasks = open_tasks_future.result()
+        pending_questions = pending_questions_future.result()
 
     return {
         "history": history,
         "today_events": today_events,
         "open_tasks": open_tasks,
+        "pending_questions": pending_questions,
     }
 
 
@@ -182,14 +204,16 @@ def chat_turn(
     session_id: str,
     user_text: str,
     open_tasks_fetcher=find_open_tasks,
+    pending_questions_fetcher=find_pending_questions,
 ) -> tuple[ChatResult, list[dict]]:
     history_started_at = time.perf_counter()
     calendar_started_at = time.perf_counter()
     open_tasks_started_at = time.perf_counter()
-    with ThreadPoolExecutor(max_workers=3) as executor:
+    with ThreadPoolExecutor(max_workers=4) as executor:
         history_future = executor.submit(get_history, session_id)
         calendar_future = executor.submit(get_today_events)
         open_tasks_future = executor.submit(open_tasks_fetcher)
+        pending_questions_future = executor.submit(pending_questions_fetcher)
         history = history_future.result()
         try:
             today_events = calendar_future.result()
@@ -203,6 +227,7 @@ def chat_turn(
             )
             today_events = []
         open_tasks = open_tasks_future.result()
+        pending_questions = pending_questions_future.result()
     history_ms = round((time.perf_counter() - history_started_at) * 1000, 1)
     calendar_ms = round((time.perf_counter() - calendar_started_at) * 1000, 1)
     open_tasks_ms = round((time.perf_counter() - open_tasks_started_at) * 1000, 1)
@@ -229,8 +254,21 @@ def chat_turn(
         "</external_data>\n\n"
         f"発言:\n{user_text}"
     )
+    if pending_questions:
+        user_message = user_message.replace(
+            "\n</external_data>",
+            _pending_questions_block(pending_questions) + "\n</external_data>",
+        )
     contents.append(types.Content(role="user", parts=[types.Part(text=user_message)]))
 
+    chat_system_instruction = (
+        CHAT_SYSTEM_INSTRUCTION
+        + COMPLETION_INSTRUCTION
+        + CALENDAR_INSTRUCTION
+        + EXTERNAL_DATA_INSTRUCTION
+    )
+    if pending_questions:
+        chat_system_instruction += PENDING_QUESTIONS_INSTRUCTION
     client = _client()
     gemini_started_at = time.perf_counter()
     response = call_with_retry(
@@ -238,12 +276,7 @@ def chat_turn(
             model=MODEL,
             contents=contents,
             config=types.GenerateContentConfig(
-                system_instruction=(
-                    CHAT_SYSTEM_INSTRUCTION
-                    + COMPLETION_INSTRUCTION
-                    + CALENDAR_INSTRUCTION
-                    + EXTERNAL_DATA_INSTRUCTION
-                ),
+                system_instruction=chat_system_instruction,
                 temperature=0.4,
                 # thinking_budget=-1(自動)は複雑な相談で長考して音声UIの応答が
                 # 遅くなりすぎたため、上限を決めて速さと最低限の思考を両立させる。
@@ -284,6 +317,7 @@ def stream_reply(
     history = context["history"]
     today_events = context["today_events"]
     open_tasks = context["open_tasks"]
+    pending_questions = context.get("pending_questions", [])
 
     known_titles = [task["title"] for task in open_tasks if task.get("title")]
     contents = [
@@ -321,16 +355,23 @@ def stream_reply(
 この会話では、読み上げ用のプレーンテキストの返答本文だけを出力してください。
 JSONやtasks・replyといったフィールド名・構造は一切書かないでください。
 タスクの記録・完了処理は別システムが行うため、あなたは会話の返答だけに集中してください。"""
+    stream_system_instruction = (
+        CHAT_SYSTEM_INSTRUCTION
+        + CALENDAR_INSTRUCTION
+        + EXTERNAL_DATA_INSTRUCTION
+        + stream_only_instruction
+    )
+    if pending_questions:
+        stream_system_instruction += PENDING_QUESTIONS_INSTRUCTION
+        contents[-1].parts[0].text = contents[-1].parts[0].text.replace(
+            "\n</external_data>",
+            _pending_questions_block(pending_questions) + "\n</external_data>",
+        )
     response = _client().models.generate_content_stream(
         model=MODEL,
         contents=contents,
         config=types.GenerateContentConfig(
-            system_instruction=(
-                CHAT_SYSTEM_INSTRUCTION
-                + CALENDAR_INSTRUCTION
-                + EXTERNAL_DATA_INSTRUCTION
-                + stream_only_instruction
-            ),
+            system_instruction=stream_system_instruction,
             temperature=0.4,
             # 思考は最初のトークンより前に走るため、ストリーミング返答では
             # 体感遅延に直結する（実測で first_sentence が+2〜3秒）。既定は無効。
