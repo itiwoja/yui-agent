@@ -4,25 +4,34 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Yui — ダッシュボード</title>
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+JP:wght@400;500;600&display=swap" rel="stylesheet" />
 <style>
   :root {
-    --bg: #0f1115;
-    --panel: #171a21;
-    --border: #262b36;
-    --text: #e7e9ee;
-    --sub: #8b93a7;
-    --accent: #6ea8ff;
-    --ask: #f0b429;
-    --progress: #c99bff;
-    --done: #4fd18b;
-    --off: #e05a5a;
+    --bg: #08090A;
+    --panel: #0F1011;
+    --surface: #191A1B;
+    --surface-raised: #1F2023;
+    --border: rgba(255,255,255,.08);
+    --text: #F7F8F8;
+    --secondary: #D0D6E0;
+    --sub: #8A8F98;
+    --quiet: #62666D;
+    --accent: #5E6AD2;
+    --accent-hover: #828FFF;
+    --accent-light: #A8B1FF;
+    --ask: #F0B429;
+    --progress: #C99BFF;
+    --done: #4FD18B;
+    --off: #E05A5A;
   }
   * { box-sizing: border-box; }
   body {
     margin: 0;
     background: var(--bg);
     color: var(--text);
-    font-family: -apple-system, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
+    font-family: "IBM Plex Sans JP", -apple-system, "Hiragino Sans", "Yu Gothic UI", "Segoe UI", sans-serif;
     min-height: 100vh;
   }
   header {
@@ -33,11 +42,12 @@
     gap: 12px;
     position: sticky;
     top: 0;
-    background: var(--bg);
+    background: rgba(8,9,10,.92);
+    backdrop-filter: blur(12px);
   }
-  header h1 { font-size: 16px; margin: 0; letter-spacing: 0.04em; }
+  header h1 { color: var(--sub); font-size: 13px; font-weight: 600; margin: 0; letter-spacing: 0.12em; }
   header a { color: var(--sub); font-size: 13px; text-decoration: none; margin-left: auto; }
-  header a:hover { color: var(--accent); }
+  header a:hover { color: var(--accent-light); }
 
   main {
     max-width: 880px;
@@ -49,18 +59,20 @@
   }
   section h2 {
     font-size: 13px;
-    font-weight: 700;
-    letter-spacing: 0.04em;
+    font-weight: 600;
+    letter-spacing: 0.12em;
     color: var(--sub);
     text-transform: uppercase;
     margin: 0 0 12px;
   }
+  #ask-section h2 { color: var(--ask); }
   .card {
-    background: var(--panel);
+    background: var(--surface);
     border: 1px solid var(--border);
     border-radius: 12px;
     padding: 16px 18px;
     margin-bottom: 10px;
+    transition: border-color 150ms ease-out, background 150ms ease-out, transform 150ms ease-out;
   }
   .card-top {
     display: flex;
@@ -68,6 +80,7 @@
     gap: 8px;
     margin-bottom: 6px;
   }
+  .card:hover { background: var(--surface-raised); border-color: rgba(255,255,255,.14); }
   .card-title { font-weight: 600; font-size: 16px; }
   .card-note { font-size: 14px; color: var(--sub); line-height: 1.6; white-space: pre-wrap; margin-top: 6px; }
   .badge {
@@ -77,10 +90,19 @@
     border: 1px solid var(--border);
     color: var(--sub);
   }
+  .priority-dot {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    flex: 0 0 8px;
+    margin-right: 6px;
+    border-radius: 50%;
+    vertical-align: 1px;
+  }
   .card.ask { border-color: var(--ask); }
   .card.ask .card-note { color: var(--ask); }
   .card.progress { border-color: var(--progress); }
-  .card.done { border-color: var(--done); opacity: 0.72; }
+  .card.done { background: var(--panel); border-color: var(--done); opacity: 0.6; }
   .card.done .card-title { text-decoration: line-through; }
   .card.high-priority { border-left-width: 4px; }
   .card.high-priority .card-title { font-weight: 700; }
@@ -94,7 +116,7 @@
   }
   .answer-row input {
     flex: 1;
-    background: #12141a;
+    background: var(--panel);
     border: 1px solid var(--border);
     border-radius: 8px;
     padding: 8px 10px;
@@ -103,40 +125,45 @@
   }
   .answer-row button {
     background: var(--accent);
-    color: #0b0e14;
+    color: var(--text);
     border: none;
     border-radius: 8px;
     padding: 0 14px;
     font-weight: 700;
     font-size: 14px;
     cursor: pointer;
+    transition: background 150ms ease-out, transform 150ms ease-out;
   }
+  .answer-row button:hover { background: var(--accent-hover); }
+  .answer-row button:active, .complete-button:active, .dismiss-button:active { transform: translateY(1px); }
   .complete-button {
     margin-left: auto;
     background: transparent;
     color: var(--done);
     border: 1px solid var(--done);
-    border-radius: 7px;
+    border-radius: 8px;
     padding: 4px 10px;
     font-size: 12px;
     cursor: pointer;
+    transition: background 150ms ease-out, border-color 150ms ease-out, transform 150ms ease-out;
   }
   .complete-button:disabled { opacity: 0.5; cursor: default; }
   .dismiss-button {
     background: transparent;
     color: var(--sub);
     border: 1px solid var(--border);
-    border-radius: 7px;
+    border-radius: 8px;
     padding: 4px 10px;
     font-size: 12px;
     cursor: pointer;
+    transition: background 150ms ease-out, border-color 150ms ease-out, color 150ms ease-out, transform 150ms ease-out;
   }
   .dismiss-button:hover { color: #e05a5a; border-color: #e05a5a; }
   .dismiss-button:disabled { opacity: 0.5; cursor: default; }
   .empty { color: var(--sub); font-size: 14px; }
 
   /* ---- アクセシビリティ（WCAG 2.2 AA）---- */
-  :focus-visible { outline: 3px solid var(--accent); outline-offset: 2px; }
+  :focus-visible { outline: 2px solid rgba(94,106,210,.4); outline-offset: 4px; box-shadow: 0 0 0 4px rgba(94,106,210,.2); }
   .visually-hidden {
     position: absolute;
     width: 1px; height: 1px;
@@ -179,7 +206,7 @@
   </main>
 
 <script>
-const priorityLabel = ['', '⚪', '🟢', '🟡', '🟠', '🔴'];
+const priorityColor = ['', '#8A8F98', '#4FD18B', '#F0B429', '#E8883A', '#E05A5A'];
 
 // 対話UIと同じアプリトークン。?token=XXX で開くと保持し、保護APIに付与する。
 const APP_TOKEN = (() => {
@@ -245,7 +272,13 @@ function card(task, extraClass) {
   top.className = 'card-top';
   const badge = document.createElement('span');
   badge.className = 'badge';
-  badge.textContent = `${priorityLabel[priority] || ''} 優先度${priority}・言及${task.mention_count}回`;
+  badge.setAttribute('aria-label', `優先度${priority}`);
+  const priorityDot = document.createElement('span');
+  priorityDot.className = 'priority-dot';
+  priorityDot.setAttribute('aria-hidden', 'true');
+  priorityDot.style.backgroundColor = priorityColor[priority] || priorityColor[1];
+  badge.appendChild(priorityDot);
+  badge.appendChild(document.createTextNode(`優先度${priority}・言及${task.mention_count}回`));
   const title = document.createElement('span');
   title.className = 'card-title';
   title.textContent = task.title;
