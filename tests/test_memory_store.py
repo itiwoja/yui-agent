@@ -22,6 +22,7 @@ class FakeDocument:
 class FakeTaskMentions:
     def __init__(self, previous):
         self.previous = previous
+        self.documents = {doc.id: doc for doc in previous}
         self.added = []
         self.where_calls = []
         self.limit_calls = []
@@ -42,6 +43,9 @@ class FakeTaskMentions:
 
     def add(self, data):
         self.added.append(data)
+
+    def document(self, doc_id):
+        return self.documents[doc_id]
 
 
 class FakeFirestore:
@@ -117,3 +121,105 @@ def test_find_pending_questions_filters_and_limits_results(monkeypatch):
     ]
     assert task_mentions.where_calls == [("status", "==", "needs_input")]
     assert task_mentions.limit_calls == [2]
+
+
+def test_cosine_similarity_handles_edge_cases():
+    from embeddings import cosine_similarity
+
+    assert cosine_similarity([1.0, 0.0], [1.0, 0.0]) == 1.0
+    assert cosine_similarity([0.0, 0.0], [1.0, 0.0]) == 0.0
+    assert cosine_similarity([1.0], [1.0, 0.0]) == 0.0
+
+
+def test_exact_title_fast_path_does_not_embed(monkeypatch):
+    previous = FakeDocument({"priority": 3, "mention_count": 1})
+    _configure_firestore(monkeypatch, [previous])
+    monkeypatch.setattr(memory_store, "embed_text", pytest.fail)
+
+    result = memory_store.record_and_resolve("Exact task", 3, "same task")
+
+    assert result["mention_count"] == 2
+
+
+def test_semantic_match_resolves_existing_task(monkeypatch):
+    candidate = FakeDocument(
+        {
+            "title": "Prepare quarterly budget",
+            "priority": 2,
+            "mention_count": 3,
+            "embedding": [1.0, 0.0],
+        },
+        doc_id="candidate",
+    )
+    task_mentions = _configure_firestore(monkeypatch, [])
+    task_mentions.documents[candidate.id] = candidate
+    infos = []
+    monkeypatch.setattr(memory_store, "is_semantic_match_enabled", lambda: True)
+    monkeypatch.setattr(
+        memory_store,
+        "embed_text",
+        lambda _title: [0.9, 0.4358898943540673],
+    )
+    monkeypatch.setattr(
+        memory_store.obs,
+        "info",
+        lambda *args, **kwargs: infos.append((args, kwargs)),
+    )
+    monkeypatch.setattr(
+        memory_store,
+        "find_open_tasks",
+        lambda: [{"id": "candidate", **candidate.to_dict()}],
+    )
+    monkeypatch.setenv("YUI_SEMANTIC_THRESHOLD", "0.9")
+
+    result = memory_store.record_and_resolve("Complete budget plan", 2, "rephrased")
+
+    assert result["mention_count"] == 4
+    assert candidate.updated[0]["priority"] == 3
+    assert infos[0][0] == ("semantic re-mention detected",)
+    assert infos[0][1]["matched_title"] == "Prepare quarterly budget"
+
+
+def test_missing_candidate_embedding_creates_new_task(monkeypatch):
+    candidate = FakeDocument({"title": "Old task", "priority": 2}, doc_id="candidate")
+    task_mentions = _configure_firestore(monkeypatch, [])
+    monkeypatch.setattr(memory_store, "is_semantic_match_enabled", lambda: True)
+    monkeypatch.setattr(memory_store, "embed_text", lambda _title: [1.0, 0.0])
+    monkeypatch.setattr(
+        memory_store,
+        "find_open_tasks",
+        lambda: [{"id": "candidate", **candidate.to_dict()}],
+    )
+
+    memory_store.record_and_resolve("New task", 2, "new")
+
+    assert task_mentions.added[0]["embedding"] == [1.0, 0.0]
+
+
+def test_embedding_failure_falls_back_to_new_task(monkeypatch):
+    task_mentions = _configure_firestore(monkeypatch, [])
+    warnings = []
+    monkeypatch.setattr(memory_store, "is_semantic_match_enabled", lambda: True)
+    monkeypatch.setattr(
+        memory_store,
+        "embed_text",
+        lambda _title: (_ for _ in ()).throw(RuntimeError("embedding unavailable")),
+    )
+    monkeypatch.setattr(
+        memory_store.obs, "warning", lambda *args, **kwargs: warnings.append(kwargs)
+    )
+
+    memory_store.record_and_resolve("New task", 2, "new")
+
+    assert "embedding" not in task_mentions.added[0]
+    assert warnings == [{"api": "embeddings"}]
+
+
+def test_disabled_semantic_matching_does_not_embed(monkeypatch):
+    task_mentions = _configure_firestore(monkeypatch, [])
+    monkeypatch.setenv("YUI_SEMANTIC_MATCH", "0")
+    monkeypatch.setattr(memory_store, "embed_text", pytest.fail)
+
+    memory_store.record_and_resolve("New task", 2, "new")
+
+    assert "embedding" not in task_mentions.added[0]

@@ -1,15 +1,54 @@
 """Firestoreでタスク言及履歴を記憶し、過去言及との突合で優先度を昇格する。"""
+import os
 from datetime import datetime, timezone
 
 from google.cloud import firestore
 
+import obs
 from clients import firestore_client
+from embeddings import cosine_similarity, embed_text, is_semantic_match_enabled
 from priority import promote
 
 COLLECTION = "task_mentions"
 PROMOTION_STEP = 1
 
 _client = firestore_client
+
+
+def _semantic_threshold() -> float:
+    """Read the semantic-match threshold, falling back safely for invalid values."""
+    try:
+        return float(os.environ.get("YUI_SEMANTIC_THRESHOLD", "0.80"))
+    except ValueError:
+        return 0.80
+
+
+def _resolve_remention(
+    data: dict, reference, title: str, priority: int, reason: str, now: datetime
+) -> dict:
+    """Apply the established re-mention update and return its public result."""
+    mention_count = data.get("mention_count", 1) + 1
+    previous_priority = data.get("priority", priority)
+    new_priority = max(promote(previous_priority, PROMOTION_STEP), priority)
+    was_promoted = new_priority > priority
+
+    reference.update(
+        {
+            "priority": new_priority,
+            "reason": reason,
+            "mention_count": mention_count,
+            "last_mentioned_at": now,
+        }
+    )
+
+    return {
+        "title": title,
+        "priority": new_priority,
+        "reason": reason,
+        "mention_count": mention_count,
+        "promoted": was_promoted,
+        "previous_priority": previous_priority,
+    }
 
 
 def get_recent_titles(limit: int = 30) -> list[str]:
@@ -138,17 +177,50 @@ def record_and_resolve(title: str, priority: int, reason: str) -> dict:
             "previous_priority": previous_priority,
         }
 
-    tasks_ref.add(
-        {
-            "title": title,
-            "priority": priority,
-            "reason": reason,
-            "mention_count": 1,
-            "first_mentioned_at": now,
-            "last_mentioned_at": now,
-            "status": "open",
-        }
-    )
+    embedding = None
+    if is_semantic_match_enabled():
+        try:
+            embedding = embed_text(title)
+        except Exception:
+            obs.warning("semantic matching failed", api="embeddings")
+        else:
+            for task in find_open_tasks():
+                task_embedding = task.get("embedding")
+                if not task_embedding:
+                    continue
+
+                similarity = cosine_similarity(embedding, task_embedding)
+                if similarity >= _semantic_threshold():
+                    matched_title = task.get("title", "")
+                    obs.info(
+                        "semantic re-mention detected",
+                        similarity=similarity,
+                        matched_title=matched_title,
+                    )
+                    # タイトルは既存の表記を維持する。新しい言い回しのまま返すと
+                    # Google Tasks の upsert が titles_match で既存エントリに一致せず
+                    # 重複タスクを作ってしまう。
+                    return _resolve_remention(
+                        task,
+                        tasks_ref.document(task["id"]),
+                        matched_title or title,
+                        priority,
+                        reason,
+                        now,
+                    )
+
+    task = {
+        "title": title,
+        "priority": priority,
+        "reason": reason,
+        "mention_count": 1,
+        "first_mentioned_at": now,
+        "last_mentioned_at": now,
+        "status": "open",
+    }
+    if embedding is not None:
+        task["embedding"] = embedding
+    tasks_ref.add(task)
 
     return {
         "title": title,
