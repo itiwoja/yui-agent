@@ -7,6 +7,7 @@ google-api-python-client==2.*
 google-auth-oauthlib==1.*
 google-cloud-texttospeech==2.*
 google-cloud-speech==2.*
+google-cloud-tasks==2.*
 pydantic==2.*
 tzdata==2025.*
 opentelemetry-sdk==1.*

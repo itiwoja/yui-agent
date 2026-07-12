@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field
 from agent_loop import answer_question, list_tasks, run_agent_loop
 from auth import assert_token_configured, require_app_token
 from autonomous_review import run_autonomous_review
+from background_queue import enqueue_finalize_turn
 from chat import append_chat_history, chat_turn, prefetch_context, stream_reply
 from confidence import filter_confident
 from dialog_actions import extract_dialog_actions
@@ -75,19 +76,8 @@ def _complete_google_task_background(title: str) -> None:
         )
 
 
-def _finalize_converse_background(
-    session_id: str,
-    user_text: str,
-    reply_parts: list[str],
-    completed: list[bool],
-) -> None:
-    """Persist a successful streamed turn and apply its task actions."""
-    if not completed:
-        return
-    reply = "".join(reply_parts)
-    if not reply:
-        return
-
+def finalize_turn(session_id: str, user_text: str, reply: str) -> None:
+    """Persist a completed conversation turn and apply its task actions."""
     append_chat_history(session_id, user_text, reply)
     try:
         known_titles = get_recent_titles()
@@ -142,6 +132,12 @@ def _finalize_converse_background(
         )
 
 
+class FinalizeTurnRequest(BaseModel):
+    session_id: str = Field(max_length=128)
+    user_text: str = Field(max_length=4000)
+    reply: str = Field(max_length=4000)
+
+
 def _ndjson_event(event: dict) -> str:
     return json.dumps(event, ensure_ascii=False) + "\n"
 
@@ -165,6 +161,23 @@ def verify_runtime_configuration() -> None:
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "agent": "yui", "version": APP_VERSION}
+
+
+@app.post("/internal/finalize-turn", dependencies=[Depends(require_app_token)])
+def internal_finalize_turn(request: FinalizeTurnRequest) -> dict:
+    """Run a durable Cloud Tasks finalization request."""
+    try:
+        finalize_turn(request.session_id, request.user_text, request.reply)
+    except Exception as exc:
+        obs.error(
+            "finalize turn failed",
+            route="/internal/finalize-turn",
+            session_id=request.session_id,
+            detail=str(exc),
+            exc_type=type(exc).__name__,
+        )
+        raise HTTPException(status_code=500, detail="finalize turn failed") from exc
+    return {"status": "ok"}
 
 
 class UtteranceRequest(BaseModel):
@@ -413,14 +426,6 @@ async def converse(
     prefetch_ms = round((time.perf_counter() - prefetch_started_at) * 1000, 1)
 
     reply_parts: list[str] = []
-    completed: list[bool] = []
-    background_tasks.add_task(
-        _finalize_converse_background,
-        session_id,
-        user_text,
-        reply_parts,
-        completed,
-    )
 
     def event_stream():
         buffer = ""
@@ -495,7 +500,8 @@ async def converse(
                 sentences += 1
                 yield from sentence_audio_events(sentence)
             reply = "".join(reply_parts)
-            completed.append(True)
+            if reply and not enqueue_finalize_turn(session_id, user_text, reply):
+                background_tasks.add_task(finalize_turn, session_id, user_text, reply)
             yield _ndjson_event({"type": "done", "reply": reply})
             obs.info(
                 "converse request completed",

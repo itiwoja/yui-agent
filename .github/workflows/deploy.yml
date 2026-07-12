@@ -64,6 +64,7 @@ jobs:
           --project yui-agent-2026
           --allow-unauthenticated
           --set-secrets=YUI_APP_TOKEN=yui-app-token:latest
+          --set-env-vars=YUI_SERVICE_URL=https://yui-agent-h5usermlua-an.a.run.app,YUI_TASKS_QUEUE=yui-background,YUI_TASKS_LOCATION=asia-northeast1
           --min-instances=1
           --no-traffic
           --tag=canary

@@ -28,7 +28,7 @@ def test_converse_streams_transcript_audio_and_done(monkeypatch):
     monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
     monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello world."]))
     monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
-    monkeypatch.setattr(main, "_finalize_converse_background", lambda *_args: None)
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args: True)
 
     client = TestClient(main.app)
     response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
@@ -57,7 +57,7 @@ def test_converse_passes_prefetched_context_to_stream_reply(monkeypatch):
         or iter(["Hello."]),
     )
     monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
-    monkeypatch.setattr(main, "_finalize_converse_background", lambda *_args: None)
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args: True)
 
     client = TestClient(main.app)
     response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
@@ -80,7 +80,7 @@ def test_converse_falls_back_to_mp3_when_streaming_tts_fails(monkeypatch):
 
     monkeypatch.setattr(main, "stream_synthesize", fail_streaming_tts)
     monkeypatch.setattr(main, "synthesize_speech", lambda _text: b"mp3")
-    monkeypatch.setattr(main, "_finalize_converse_background", lambda *_args: None)
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args: True)
 
     client = TestClient(main.app)
     response = client.post("/converse?session_id=session", content=b"audio", headers=HEADERS)
@@ -139,9 +139,7 @@ def test_finalize_converse_applies_matching_pending_question_answer(monkeypatch)
         main, "answer_question", lambda doc_id, answer: answered.append((doc_id, answer))
     )
 
-    main._finalize_converse_background(
-        "session", "Maya is the reviewer.", ["Thanks."], [True]
-    )
+    main.finalize_turn("session", "Maya is the reviewer.", "Thanks.")
 
     assert answered == [("task-1", "Maya")]
 
@@ -181,7 +179,117 @@ def test_finalize_converse_continues_after_question_answer_failure(monkeypatch):
     monkeypatch.setattr(main, "answer_question", answer)
     monkeypatch.setattr(main.obs, "error", lambda *args, **kwargs: errors.append(args[0]))
 
-    main._finalize_converse_background("session", "answers", ["Thanks."], [True])
+    main.finalize_turn("session", "answers", "Thanks.")
 
     assert answered == [("second", "two")]
     assert "converse question answer failed" in errors
+
+
+def test_converse_uses_local_background_finalizer_when_enqueue_fails(monkeypatch):
+    finalized = []
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
+    monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
+    monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello."]))
+    monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args: False)
+    monkeypatch.setattr(main, "finalize_turn", lambda *args: finalized.append(args))
+
+    response = TestClient(main.app).post(
+        "/converse?session_id=session", content=b"audio", headers=HEADERS
+    )
+
+    assert response.status_code == 200
+    assert finalized == [("session", "hello", "Hello.")]
+
+
+def test_converse_does_not_run_local_finalizer_when_enqueue_succeeds(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
+    monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
+    monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(["Hello."]))
+    monkeypatch.setattr(main, "stream_synthesize", lambda _text: iter([b"pcm"]))
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *_args: True)
+    monkeypatch.setattr(
+        main,
+        "finalize_turn",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not run locally")),
+    )
+
+    response = TestClient(main.app).post(
+        "/converse?session_id=session", content=b"audio", headers=HEADERS
+    )
+
+    assert response.status_code == 200
+
+
+def test_converse_does_not_finalize_an_empty_reply(monkeypatch):
+    enqueued = []
+    monkeypatch.setattr(
+        main,
+        "prefetch_context",
+        lambda _session_id: {"history": [], "today_events": [], "open_tasks": []},
+    )
+    monkeypatch.setattr(main, "transcribe_audio", lambda _audio: "hello")
+    monkeypatch.setattr(main, "stream_reply", lambda *_args: iter(()))
+    monkeypatch.setattr(main, "enqueue_finalize_turn", lambda *args: enqueued.append(args))
+    monkeypatch.setattr(
+        main,
+        "finalize_turn",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not finalize")),
+    )
+
+    response = TestClient(main.app).post("/converse", content=b"audio", headers=HEADERS)
+
+    assert response.status_code == 200
+    assert enqueued == []
+
+
+def test_internal_finalize_turn_requires_token_and_runs_finalizer(monkeypatch):
+    finalized = []
+    monkeypatch.setattr(main, "finalize_turn", lambda *args: finalized.append(args))
+    client = TestClient(main.app)
+
+    unauthorized = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "session", "user_text": "hello", "reply": "reply"},
+    )
+    response = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "session", "user_text": "hello", "reply": "reply"},
+        headers=HEADERS,
+    )
+
+    assert unauthorized.status_code == 401
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+    assert finalized == [("session", "hello", "reply")]
+
+
+def test_internal_finalize_turn_validates_and_returns_500_on_failure(monkeypatch):
+    monkeypatch.setattr(
+        main,
+        "finalize_turn",
+        lambda *_args: (_ for _ in ()).throw(RuntimeError("unavailable")),
+    )
+    client = TestClient(main.app, raise_server_exceptions=False)
+
+    too_long = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "s" * 129, "user_text": "hello", "reply": "reply"},
+        headers=HEADERS,
+    )
+    failed = client.post(
+        "/internal/finalize-turn",
+        json={"session_id": "session", "user_text": "hello", "reply": "reply"},
+        headers=HEADERS,
+    )
+
+    assert too_long.status_code == 422
+    assert failed.status_code == 500
