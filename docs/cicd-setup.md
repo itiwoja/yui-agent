@@ -137,7 +137,7 @@ gcloud secrets add-iam-policy-binding yui-app-token \
 
 ## 5. Cloud Schedulerの再現
 
-Scheduler専用サービスアカウントから `/autonomous-review` を30分ごとに呼ぶ。
+Scheduler専用サービスアカウントから `/autonomous-review` を10分ごとに呼ぶ。
 `--allow-unauthenticated` のためアプリ層のトークンで保護しており、Schedulerには
 `X-Yui-Token` ヘッダを付与する（`§4.5` で作成したトークン値を使う）。既に同名
 ジョブがある場合は `create` ではなく `gcloud scheduler jobs update http` を使う。

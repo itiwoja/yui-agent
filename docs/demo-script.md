@@ -61,7 +61,7 @@
 
 ### 4. 裏側 — エージェントが勝手に働く（約1.5分）
 
-- `POST /autonomous-review` を手動トリガー（本番は Cloud Scheduler が30分毎）
+- `POST /autonomous-review` を手動トリガー（本番は Cloud Scheduler が10分毎）
 - ダッシュボードで見せる:
   - 放置タスクの**優先度エスカレーション**がその場で起きる
   - Google Search grounding による**調査ノート**の新規添付
